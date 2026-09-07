@@ -9,11 +9,12 @@
     showHidden: false,
     filterDeckIds: null, // Set of deck ids matching the current search, or null
     matchedSlideIds: new Set(),
+    refreshingDeckIds: new Set(),
   };
 
-  const ROW_HEIGHT = 260;
-  const THUMB_WIDTH = 220;
-  const EXPANDED_THUMB_WIDTH = 160;
+  const SLIDE_HEIGHT = 130; // all slide thumbnails render at this height
+  const SLIDES_PER_ROW = 20;
+  const DECK_HEADER_HEIGHT = 40; // deck name + a small gap between decks
 
   const canvas = d3.select("#canvas");
   const viewport = document.getElementById("viewport");
@@ -57,6 +58,24 @@
     }
   }
 
+  async function pollEmbeddingStatus() {
+    try {
+      const res = await fetch("/api/embeddings/status");
+      const status = await res.json();
+      const el = document.getElementById("embedding-status");
+      if (!status.available || !status.total) {
+        el.textContent = "";
+      } else if (status.embedded < status.total) {
+        const pct = Math.round((status.embedded / status.total) * 100);
+        el.textContent = `Embedding slides… ${pct}% (${status.embedded}/${status.total})`;
+      } else {
+        el.textContent = "";
+      }
+    } catch (e) {
+      /* ignore transient network errors */
+    }
+  }
+
   // -- rendering ------------------------------------------------------------
   function visibleDecks() {
     if (!state.filterDeckIds) return state.decks;
@@ -74,13 +93,30 @@
     );
   }
 
-  function slideThumbHTML(slide, width) {
+  function slideRows(slides) {
+    const rows = [];
+    for (let index = 0; index < slides.length; index += SLIDES_PER_ROW) {
+      rows.push(slides.slice(index, index + SLIDES_PER_ROW));
+    }
+    return rows;
+  }
+
+  function deckHeight(deck) {
+    const first = firstSlideOf(deck);
+    if (!first) return DECK_HEADER_HEIGHT;
+    const others = state.expanded.has(deck.id) ? otherSlidesOf(deck, first) : [];
+    const rowCount = slideRows([first, ...others]).length;
+    return DECK_HEADER_HEIGHT + rowCount * SLIDE_HEIGHT + (rowCount - 1) * 10;
+  }
+
+  function slideThumbHTML(slide) {
     const classes = ["slide-thumb"];
     if (state.selection.has(slide.id)) classes.push("selected");
     if (slide.hidden) classes.push("hidden-slide");
     if (state.matchedSlideIds.has(slide.id)) classes.push("matched");
+    if (state.filterDeckIds && !state.matchedSlideIds.has(slide.id)) classes.push("unmatched");
     const badge = slide.hidden ? '<span class="badge">hidden</span>' : "";
-    return `<div class="${classes.join(" ")}" data-slide-id="${slide.id}" style="width:${width}px">
+    return `<div class="${classes.join(" ")}" data-slide-id="${slide.id}" style="height:${SLIDE_HEIGHT}px">
       <img loading="lazy" src="/api/slides/${slide.id}/image?dpi=90" alt="slide ${slide.index_in_deck + 1}" />
       ${badge}
     </div>`;
@@ -88,6 +124,12 @@
 
   function render() {
     const decks = visibleDecks();
+    const deckTops = new Map();
+    let nextTop = 0;
+    decks.forEach((deck) => {
+      deckTops.set(deck.id, nextTop);
+      nextTop += deckHeight(deck);
+    });
 
     const rows = canvas
       .selectAll(".deck-card")
@@ -101,19 +143,19 @@
       .attr("class", "deck-card");
 
     entered.merge(rows)
-      .style("top", (d, i) => `${i * ROW_HEIGHT}px`)
+      .style("top", (deck) => `${deckTops.get(deck.id)}px`)
       .style("left", "0px")
       .html((deck) => {
         const first = firstSlideOf(deck);
         const others = state.expanded.has(deck.id) ? otherSlidesOf(deck, first) : [];
         const nameHtml = `<div class="deck-name" title="${escapeHtml(deck.pptx_path)}">${escapeHtml(deck.name)}</div>`;
-        const firstHtml = first ? slideThumbHTML(first, THUMB_WIDTH) : "<div>(no slides)</div>";
-        const expandedHtml = others.length
-          ? `<div class="deck-expanded" style="left:${THUMB_WIDTH + 16}px;top:0">` +
-            others.map((s) => slideThumbHTML(s, EXPANDED_THUMB_WIDTH)).join("") +
-            "</div>"
-          : "";
-        return `<div style="position:relative">${nameHtml}${firstHtml}${expandedHtml}</div>`;
+        const refreshButton = `<button class="refresh-deck-btn" data-deck-id="${deck.id}" title="Refresh deck database" aria-label="Refresh ${escapeHtml(deck.name)}"${state.refreshingDeckIds.has(deck.id) ? " disabled" : ""}>↻</button>`;
+        const slidesHtml = first
+          ? `<div class="deck-slide-lines">${slideRows([first, ...others])
+            .map((slideRow) => `<div class="deck-slide-row">${slideRow.map((s) => slideThumbHTML(s)).join("")}</div>`)
+            .join("")}</div>`
+          : "<div>(no slides)</div>";
+        return `${nameHtml}<div class="deck-row">${refreshButton}${slidesHtml}</div>`;
       });
 
     attachThumbHandlers();
@@ -121,6 +163,12 @@
   }
 
   function attachThumbHandlers() {
+    canvas.selectAll(".refresh-deck-btn").on("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      refreshDeck(Number(this.getAttribute("data-deck-id")));
+    });
+
     canvas.selectAll(".slide-thumb").on("click", function (event) {
       const slideId = Number(this.getAttribute("data-slide-id"));
       const deck = state.decks.find((d) => d.slides.some((s) => s.id === slideId));
@@ -137,6 +185,23 @@
       const slideId = Number(this.getAttribute("data-slide-id"));
       toggleSelection(slideId);
     });
+  }
+
+  async function refreshDeck(deckId) {
+    if (state.refreshingDeckIds.has(deckId)) return;
+    state.refreshingDeckIds.add(deckId);
+    render();
+    try {
+      const res = await fetch(`/api/decks/${deckId}/refresh`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || "Refresh failed");
+      await loadDecks();
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      state.refreshingDeckIds.delete(deckId);
+      render();
+    }
   }
 
   function toggleExpanded(deckId) {
@@ -179,8 +244,14 @@
       render();
       return;
     }
-    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    const mode = document.getElementById("search-mode").value;
+    const endpoint = mode === "semantic" ? "/api/search/semantic" : "/api/search";
+    const res = await fetch(`${endpoint}?q=${encodeURIComponent(query)}`);
     const results = await res.json();
+    if (results && !Array.isArray(results) && results.error) {
+      window.alert("Search failed: " + results.error);
+      return;
+    }
     state.filterDeckIds = new Set(results.map((d) => d.id));
     state.matchedSlideIds = new Set();
     results.forEach((d) => {
@@ -212,6 +283,11 @@
     if (event.key === "Enter") runSearch(event.target.value);
   });
 
+  document.getElementById("search-mode").addEventListener("change", () => {
+    const query = document.getElementById("search-box").value;
+    if (query.trim()) runSearch(query);
+  });
+
   document.getElementById("toggle-hidden").addEventListener("change", (event) => {
     state.showHidden = event.target.checked;
     render();
@@ -226,6 +302,8 @@
 
   loadDecks();
   pollScanStatus();
+  pollEmbeddingStatus();
   setInterval(loadDecks, 5000);
   setInterval(pollScanStatus, 2000);
+  setInterval(pollEmbeddingStatus, 2000);
 })();

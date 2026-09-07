@@ -3,7 +3,9 @@ PDF conversion, slide-image rendering and search/export over one project folder.
 """
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -11,9 +13,11 @@ from PIL import Image
 from pptx import Presentation
 from pptx.slide import Slide as PptxSlide
 
-from . import convert, db, images, pptx_tools
+from . import convert, db, embeddings, images, pptx_tools
 from .models import Deck, Slide
 from .scanner import BackgroundScanner, scan_once
+
+log = logging.getLogger(__name__)
 
 DB_FILENAME = "slidedeck.db"
 CACHE_DIRNAME = ".slidedeck_cache"
@@ -21,6 +25,8 @@ CACHE_DIRNAME = ".slidedeck_cache"
 
 class SlideProject:
     """Opens or creates a slidedeck project rooted at `folder`."""
+
+    EMBEDDING_MODEL = embeddings.DEFAULT_MODEL
 
     def __init__(self, folder: str | Path):
         self.folder = Path(folder).expanduser().resolve()
@@ -44,6 +50,11 @@ class SlideProject:
         """Synchronously scan the folder once, updating the database."""
         with self._conn_lock:
             scan_once(self)
+    
+    def refresh_deck(self, deck_id: int) -> None:
+        """Force a fresh scan of one deck and its derived database contents."""
+        with self._conn_lock:
+            scan_once(self, deck_id=deck_id, force=True)
 
     def scan_in_background(self, interval: float = 5.0) -> BackgroundScanner:
         """Start (or return the existing) background scan loop."""
@@ -104,6 +115,69 @@ class SlideProject:
                 (query,),
             ).fetchall()
         return [Slide.from_row(r) for r in rows]
+
+    # -- semantic search --------------------------------------------------
+    def embedding_status(self) -> dict:
+        """Report whether semantic search is usable, and cache coverage."""
+        with self._conn_lock:
+            total = self.conn.execute(
+                "SELECT COUNT(*) AS c FROM slides WHERE text != ''"
+            ).fetchone()["c"]
+            done = self.conn.execute(
+                "SELECT COUNT(*) AS c FROM slide_embeddings WHERE model = ?",
+                (self.EMBEDDING_MODEL,),
+            ).fetchone()["c"]
+        return {"available": embeddings.is_available(), "total": total, "embedded": done}
+
+    def embed_pending(self, limit: int = 20) -> int:
+        """Compute and cache embeddings for up to `limit` slides that don't yet
+        have one for the current model. Returns the number of slides embedded.
+        """
+        if not embeddings.is_available():
+            return 0
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT slides.id, slides.text FROM slides "
+                "LEFT JOIN slide_embeddings "
+                "ON slide_embeddings.slide_id = slides.id AND slide_embeddings.model = ? "
+                "WHERE slides.text != '' AND slide_embeddings.slide_id IS NULL "
+                "LIMIT ?",
+                (self.EMBEDDING_MODEL, limit),
+            ).fetchall()
+        count = 0
+        for row in rows:
+            try:
+                vector = embeddings.embed_kiara(row["text"][:1024], embedding_model=self.EMBEDDING_MODEL)
+            except Exception as exc:
+                log.warning("Embedding failed for slide %s: %s", row["id"], exc, row["text"])
+                continue
+            with self._conn_lock:
+                self.conn.execute(
+                    "INSERT INTO slide_embeddings (slide_id, model, vector, updated_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(slide_id) DO UPDATE SET "
+                    "model=excluded.model, vector=excluded.vector, updated_at=excluded.updated_at",
+                    (row["id"], self.EMBEDDING_MODEL, embeddings.pack_vector(vector), time.time()),
+                )
+                self.conn.commit()
+            count += 1
+        return count
+
+    def search_semantic(self, query: str, top_k: int = 20) -> List[Slide]:
+        """Embedding-based semantic search over cached slide vectors, best matches first."""
+        query_vector = embeddings.embed_kiara(query, embedding_model=self.EMBEDDING_MODEL)
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT slide_id, vector FROM slide_embeddings WHERE model = ?",
+                (self.EMBEDDING_MODEL,),
+            ).fetchall()
+        scored = [
+            (embeddings.cosine_similarity(query_vector, embeddings.unpack_vector(row["vector"])), row["slide_id"])
+            for row in rows
+        ]
+        scored.sort(key=lambda t: t[0], reverse=True)
+        slides = [self.slide(slide_id) for _, slide_id in scored[:top_k]]
+        return [s for s in slides if s is not None]
 
     # -- rendering --------------------------------------------------------
     def slide_image(self, slide_id: int, dpi: int = 110) -> Image.Image:

@@ -60,14 +60,27 @@ def _index_slides(conn, deck_id: int, pptx_path: Path) -> None:
     )
 
 
-def scan_once(project: "SlideProject") -> None:
-    """Run one full scan of `project.folder`, updating the project database."""
+def scan_once(
+    project: "SlideProject", deck_id: Optional[int] = None, force: bool = False
+) -> None:
+    """Scan the project, optionally forcing a single deck to be reindexed."""
     conn = project.conn
     root = project.folder
     seen_paths = set()
 
+    target_path = None
+    if deck_id is not None:
+        target = conn.execute(
+            "SELECT pptx_path FROM decks WHERE id = ?", (deck_id,)
+        ).fetchone()
+        if target is None:
+            return
+        target_path = target["pptx_path"]
+
     for pptx_path in _iter_pptx_files(root):
         rel_pptx = _rel(root, pptx_path)
+        if target_path is not None and rel_pptx != target_path:
+            continue
         seen_paths.add(rel_pptx)
         project._status["current_file"] = rel_pptx
         try:
@@ -84,7 +97,7 @@ def scan_once(project: "SlideProject") -> None:
         pdf_path = root / pdf_rel
         hidden_pdf_path = root / hidden_pdf_rel
 
-        needs_reindex = row is None or row["pptx_mtime"] != mtime
+        needs_reindex = force or row is None or row["pptx_mtime"] != mtime
 
         if not pdf_path.exists() or needs_reindex:
             try:
@@ -127,6 +140,10 @@ def scan_once(project: "SlideProject") -> None:
             _index_slides(conn, deck_id, pptx_path)
         conn.commit()
 
+    if deck_id is not None:
+        project._status["current_file"] = None
+        return
+
     # Drop decks whose source .pptx has disappeared.
     existing = conn.execute("SELECT id, pptx_path FROM decks").fetchall()
     for row in existing:
@@ -167,6 +184,7 @@ class BackgroundScanner:
                 try:
                     with self.project._conn_lock:
                         scan_once(self.project)
+                    self.project.embed_pending()
                 except Exception as exc:  # keep the loop alive across transient errors
                     log.exception("Scan failed")
                     status["error"] = str(exc)

@@ -10,6 +10,10 @@
 <body>
   <header id="toolbar">
     <input id="search-box" type="text" placeholder="Search slide text and press Enter…" />
+    <select id="search-mode" title="Search mode">
+      <option value="keyword" selected>Keyword search</option>
+      <option value="semantic">Semantic search (AI)</option>
+    </select>
     <label class="toggle">
       <input id="toggle-hidden" type="checkbox" />
       Show hidden slides
@@ -18,6 +22,7 @@
     <button id="export-btn" disabled>Export selection</button>
     <button id="clear-selection-btn" disabled>Clear selection</button>
     <span id="scan-status"></span>
+    <span id="embedding-status"></span>
   </header>
 
   <div id="viewport">

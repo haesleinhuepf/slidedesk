@@ -6,6 +6,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, render_template
 
+from .. import embeddings
 from ..project import SlideProject
 
 
@@ -84,6 +85,38 @@ def create_app(project: SlideProject) -> Flask:
             results.append(payload)
         return jsonify(results)
 
+    @app.get("/api/search/semantic")
+    def api_search_semantic():
+        query = request.args.get("q", "").strip()
+        if not query:
+            return jsonify([])
+        try:
+            slides = project.search_semantic(query)
+        except embeddings.EmbeddingError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 502
+        rank = {slide.id: i for i, slide in enumerate(slides)}
+        by_deck = {}
+        for slide in slides:
+            by_deck.setdefault(slide.deck_id, []).append(slide_to_json(slide))
+        results = []
+        for deck_id, matched_slides in by_deck.items():
+            deck = project.deck(deck_id)
+            if deck is None:
+                continue
+            payload = deck_to_json(deck)
+            payload["matched_slides"] = matched_slides
+            payload["slides"] = [slide_to_json(s) for s in project.slides(deck_id)]
+            results.append(payload)
+        # keep decks ordered by their best-matching (highest-scored) slide
+        results.sort(key=lambda d: min(rank[s["id"]] for s in d["matched_slides"]))
+        return jsonify(results)
+
+    @app.get("/api/embeddings/status")
+    def api_embeddings_status():
+        return jsonify(project.embedding_status())
+
     @app.get("/api/slides/<int:slide_id>/image")
     def api_slide_image(slide_id):
         dpi = request.args.get("dpi", default=110, type=int)
@@ -103,6 +136,13 @@ def create_app(project: SlideProject) -> Flask:
     @app.post("/api/scan")
     def api_scan_trigger():
         project.scan_in_background()
+        return jsonify({"ok": True})
+
+    @app.post("/api/decks/<int:deck_id>/refresh")
+    def api_deck_refresh(deck_id):
+        if project.deck(deck_id) is None:
+            return jsonify({"error": "deck not found"}), 404
+        project.refresh_deck(deck_id)
         return jsonify({"ok": True})
 
     @app.post("/api/export")

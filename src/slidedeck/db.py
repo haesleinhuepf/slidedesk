@@ -35,6 +35,13 @@ CREATE TABLE IF NOT EXISTS slides (
 
 CREATE INDEX IF NOT EXISTS idx_slides_deck ON slides(deck_id);
 
+CREATE TABLE IF NOT EXISTS slide_embeddings (
+    slide_id INTEGER PRIMARY KEY REFERENCES slides(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS slides_fts USING fts5(
     text,
     content='slides',

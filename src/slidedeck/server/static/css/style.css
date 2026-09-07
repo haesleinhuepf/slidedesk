@@ -43,6 +43,15 @@ html, body {
   font-size: 14px;
 }
 
+#search-mode {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #14161a;
+  color: var(--text);
+  font-size: 13px;
+}
+
 .toggle {
   display: flex;
   align-items: center;
@@ -66,6 +75,7 @@ button:not(:disabled):hover { border-color: var(--accent); }
 
 #selection-count { font-size: 13px; color: var(--muted); white-space: nowrap; }
 #scan-status { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
+#embedding-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
 #viewport {
   position: absolute;
@@ -83,10 +93,10 @@ button:not(:disabled):hover { border-color: var(--accent); }
 
 .deck-card {
   position: absolute;
-  width: var(--card-w);
 }
 
 .deck-name {
+  width: var(--card-w);
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 4px;
@@ -95,7 +105,36 @@ button:not(:disabled):hover { border-color: var(--accent); }
   text-overflow: ellipsis;
 }
 
+.deck-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.deck-slide-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deck-slide-row {
+  display: flex;
+  gap: 10px;
+}
+
+.refresh-deck-btn {
+  flex: 0 0 28px;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 19px;
+  line-height: 1;
+}
+
 .slide-thumb {
+  display: inline-block;
+  flex: 0 0 auto;
   border: 2px solid transparent;
   border-radius: 4px;
   overflow: hidden;
@@ -105,14 +144,21 @@ button:not(:disabled):hover { border-color: var(--accent); }
 }
 .slide-thumb img {
   display: block;
-  width: 100%;
-  height: auto;
+  width: auto;
+  height: 100%;
   pointer-events: none;
   user-select: none;
 }
 .slide-thumb.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .slide-thumb.hidden-slide { border-color: #a05a00; }
 .slide-thumb.matched { box-shadow: 0 0 0 2px #ffd54d; }
+.slide-thumb.unmatched::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
 .slide-thumb .badge {
   position: absolute;
   top: 2px; right: 2px;
@@ -121,20 +167,6 @@ button:not(:disabled):hover { border-color: var(--accent); }
   font-size: 10px;
   padding: 1px 4px;
   border-radius: 3px;
-}
-
-.deck-expanded {
-  position: absolute;
-  display: flex;
-  gap: 10px;
-  padding: 6px;
-  background: rgba(0,0,0,0.25);
-  border-radius: 6px;
-}
-
-.deck-expanded .slide-thumb {
-  width: 160px;
-  flex: 0 0 auto;
 }
 
 .match-snippet {

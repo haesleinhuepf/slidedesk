@@ -5,6 +5,7 @@ copying slides between presentations (for "export selection").
 from __future__ import annotations
 
 import copy
+from io import BytesIO
 from pathlib import Path
 from typing import List
 
@@ -92,7 +93,7 @@ def copy_slide_into(dest_prs: Presentation, src_slide) -> None:
     for rel in src_part.rels.values():
         if rel.reltype.endswith("/image") or "image" in rel.reltype:
             image_part = rel.target_part
-            new_image_part, _ = dest_part.get_or_add_image_part(image_part.image)
+            new_image_part, _ = dest_part.get_or_add_image_part(BytesIO(image_part.image.blob))
             new_rId = dest_part.relate_to(new_image_part, rel.reltype)
             rel_map[rel.rId] = new_rId
 
