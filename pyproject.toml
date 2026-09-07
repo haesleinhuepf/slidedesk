@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slidedeck"
+version = "0.1.0"
+description = "Index, browse and search PowerPoint slide decks in a folder, with a browser-based GUI."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "slidedeck" }]
+dependencies = [
+    "flask>=3.0",
+    "python-pptx>=0.6.23",
+    "pdf2image>=1.17.0",
+    "pillow>=10.0.0",
+    "click>=8.1",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+slidedeck = "slidedeck.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+slidedeck = ["server/static/**/*", "server/templates/**/*"]

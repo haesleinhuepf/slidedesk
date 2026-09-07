@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>slidedeck</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+</head>
+<body>
+  <header id="toolbar">
+    <input id="search-box" type="text" placeholder="Search slide text and press Enter…" />
+    <label class="toggle">
+      <input id="toggle-hidden" type="checkbox" />
+      Show hidden slides
+    </label>
+    <span id="selection-count">0 selected</span>
+    <button id="export-btn" disabled>Export selection</button>
+    <button id="clear-selection-btn" disabled>Clear selection</button>
+    <span id="scan-status"></span>
+  </header>
+
+  <div id="viewport">
+    <div id="canvas"></div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
