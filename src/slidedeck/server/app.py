@@ -18,6 +18,9 @@ def create_app(project: SlideProject) -> Flask:
     )
     app.config["JSON_SORT_KEYS"] = False
 
+    def deck_file_exists(deck):
+        return deck is not None and (project.folder / deck.pptx_path).is_file()
+
     def deck_to_json(deck):
         return {
             "id": deck.id,
@@ -49,6 +52,8 @@ def create_app(project: SlideProject) -> Flask:
     def api_decks():
         decks = []
         for deck in project.decks():
+            if not deck_file_exists(deck):
+                continue
             slides = project.slides(deck.id)
             payload = deck_to_json(deck)
             payload["slides"] = [slide_to_json(s) for s in slides]
@@ -57,6 +62,8 @@ def create_app(project: SlideProject) -> Flask:
 
     @app.get("/api/decks/<int:deck_id>/slides")
     def api_deck_slides(deck_id):
+        if not deck_file_exists(project.deck(deck_id)):
+            return jsonify([])
         include_hidden = request.args.get("hidden", "true").lower() != "false"
         slides = project.slides(deck_id, include_hidden=include_hidden)
         return jsonify([slide_to_json(s) for s in slides])
@@ -77,7 +84,7 @@ def create_app(project: SlideProject) -> Flask:
         results = []
         for deck_id, matched_slides in by_deck.items():
             deck = project.deck(deck_id)
-            if deck is None:
+            if not deck_file_exists(deck):
                 continue
             payload = deck_to_json(deck)
             payload["matched_slides"] = matched_slides
@@ -103,7 +110,7 @@ def create_app(project: SlideProject) -> Flask:
         results = []
         for deck_id, matched_slides in by_deck.items():
             deck = project.deck(deck_id)
-            if deck is None:
+            if not deck_file_exists(deck):
                 continue
             payload = deck_to_json(deck)
             payload["matched_slides"] = matched_slides
@@ -115,13 +122,18 @@ def create_app(project: SlideProject) -> Flask:
 
     @app.get("/api/slides/<int:slide_id>/similar")
     def api_slide_similar(slide_id):
-        if project.slide(slide_id) is None:
+        source = project.slide(slide_id)
+        if source is None or not deck_file_exists(project.deck(source.deck_id)):
             return jsonify({"error": "slide not found"}), 404
         try:
             slides = project.similar_slides(slide_id)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 502
-        return jsonify([slide_to_json(s) for s in slides])
+        available_decks = {
+            deck_id: deck_file_exists(project.deck(deck_id))
+            for deck_id in {s.deck_id for s in slides}
+        }
+        return jsonify([slide_to_json(s) for s in slides if available_decks[s.deck_id]])
 
     @app.get("/api/embeddings/status")
     def api_embeddings_status():
