@@ -140,7 +140,7 @@ def scan_once(
             _index_slides(conn, deck_id, pptx_path)
         conn.commit()
 
-    if deck_id is not None:
+    if target_path is not None:
         if target_path not in seen_paths:
             # The deck's source .pptx is gone; drop the stale record.
             conn.execute("DELETE FROM decks WHERE id = ?", (deck_id,))
@@ -165,6 +165,7 @@ class BackgroundScanner:
         self.interval = interval
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._image_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -172,11 +173,26 @@ class BackgroundScanner:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        self._image_thread = threading.Thread(target=self._run_images, daemon=True)
+        self._image_thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread:
-            self._thread.join(timeout=5)
+            self._thread.join()
+        if self._image_thread:
+            self._image_thread.join()
+
+    def _run_images(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                count = self.project.embed_images_pending(stop_event=self._stop_event)
+            except Exception as exc:
+                log.warning("Background image embeddings failed: %s", exc)
+                self._stop_event.wait(max(60.0, self.interval))
+                continue
+            if count == 0:
+                self._stop_event.wait(self.interval)
 
     def _run(self) -> None:
         status = self.project._status

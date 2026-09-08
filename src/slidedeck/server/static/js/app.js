@@ -118,12 +118,15 @@
       const status = await res.json();
       const el = document.getElementById("embedding-status");
       el.title = "";
-      if (!status.available || !status.total) {
+      const caches = [status, status.vision].filter((cache) => cache && cache.available);
+      const total = caches.reduce((sum, cache) => sum + cache.total, 0);
+      const embedded = caches.reduce((sum, cache) => sum + cache.embedded, 0);
+      if (!total) {
         el.textContent = "";
-      } else if (status.embedded < status.total) {
-        const pct = Math.round((status.embedded / status.total) * 100);
+      } else if (embedded < total) {
+        const pct = Math.min(99, Math.round((embedded / total) * 100));
         showStatusProgress(el, `Embedding… ${pct}%`, pct,
-          `Embedding slides: ${status.embedded}/${status.total}`);
+          `Embedding slides: ${embedded}/${total}`);
       } else {
         el.textContent = "";
       }
@@ -353,6 +356,8 @@
     const el = event.target.closest(".slide-thumb");
     if (!el) return;
     event.preventDefault();
+    // Keep slide selection from triggering the viewport's double-click zoom.
+    event.stopPropagation();
     toggleSelection(Number(el.getAttribute("data-slide-id")));
   });
 

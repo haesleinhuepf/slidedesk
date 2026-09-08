@@ -43,6 +43,20 @@ Local mode uses `http://localhost:11434/v1/` and does not need a KIARA API key.
 In Python, use `SlideProject("/path/to/folder", local=True)`.
 Switching providers recomputes cached slide embeddings for the selected model.
 
+Slide images are also embedded locally with `openai/clip-vit-base-patch32`.
+The background worker downloads CLIP on first use (internet access required),
+then reuses the downloaded model and stores vectors in `slidedeck.db`.
+This includes hidden slides and slides without text once their PDF exports are
+available. Changed slides or PDF exports are embedded again automatically.
+Upgrade an existing installation with `pip install -e .` to install PyTorch and
+Transformers. Image embeddings require no KIARA key or Ollama server.
+
+“Show similar slides” presents one list: visual matches first, followed by
+additional text matches, without duplicates or separate labels. Either cache
+can supply results while the other is still being built or unavailable.
+In Python, `project.embed_images_pending()` processes a batch synchronously;
+`project.scan_in_background()` maintains both caches automatically.
+
 ```python
 from slidedeck import SlideProject
 

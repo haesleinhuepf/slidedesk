@@ -14,7 +14,7 @@ from PIL import Image
 from pptx import Presentation
 from pptx.slide import Slide as PptxSlide
 
-from . import convert, db, embeddings, images, pptx_tools
+from . import convert, db, embeddings, image_embeddings, images, pptx_tools
 from .models import Deck, Slide
 from .scanner import BackgroundScanner, scan_once
 
@@ -29,6 +29,7 @@ class SlideProject:
     """Opens or creates a slidedeck project rooted at `folder`."""
 
     EMBEDDING_MODEL = embeddings.DEFAULT_MODEL
+    IMAGE_EMBEDDING_MODEL = image_embeddings.MODEL
 
     def __init__(self, folder: str | Path, local: bool = False):
         self.local = local
@@ -53,6 +54,7 @@ class SlideProject:
         self.export_dir = Path(self._export_tempdir.name)
         self._export_lock = threading.Lock()
         self._export_number = 0
+        self._image_embedding_lock = threading.Lock()
 
     # -- indexing -----------------------------------------------------
     def scan(self) -> None:
@@ -135,7 +137,7 @@ class SlideProject:
         return embed(text, embedding_model=self.EMBEDDING_MODEL)
 
     def embedding_status(self) -> dict:
-        """Report whether semantic search is usable, and cache coverage."""
+        """Report text and vision cache coverage without running inference."""
         with self._conn_lock:
             total = self.conn.execute(
                 "SELECT COUNT(*) AS c FROM slides WHERE text != ''"
@@ -144,7 +146,21 @@ class SlideProject:
                 "SELECT COUNT(*) AS c FROM slide_embeddings WHERE model = ?",
                 (self.EMBEDDING_MODEL,),
             ).fetchone()["c"]
-        return {"available": self._embeddings_available(), "total": total, "embedded": done}
+            image_rows = self.conn.execute(
+                "SELECT s.id, e.source_key FROM slides s "
+                "LEFT JOIN slide_image_embeddings e ON e.slide_id = s.id AND e.model = ?",
+                (self.IMAGE_EMBEDDING_MODEL,),
+            ).fetchall()
+            image_done = sum(
+                row["source_key"] is not None
+                and row["source_key"] == self._image_source_key(row["id"])
+                for row in image_rows
+            )
+        return {
+            "available": self._embeddings_available(), "total": total, "embedded": done,
+            "vision": {"available": image_embeddings.is_available(),
+                       "total": len(image_rows), "embedded": image_done},
+        }
 
     def embed_pending(self, limit: int = 20) -> int:
         """Compute and cache embeddings for up to `limit` slides that don't yet
@@ -169,6 +185,9 @@ class SlideProject:
                 log.warning("Embedding failed for slide %s: %s", row["id"], exc)
                 continue
             with self._conn_lock:
+                current = self.slide(row["id"])
+                if current is None or current.text != row["text"]:
+                    continue
                 self.conn.execute(
                     "INSERT INTO slide_embeddings (slide_id, model, vector, updated_at) "
                     "VALUES (?, ?, ?, ?) "
@@ -180,29 +199,106 @@ class SlideProject:
             count += 1
         return count
 
-    def similar_slides(self, slide_id: int, top_k: int = 16) -> List[Slide]:
-        """Slides whose cached embedding is closest to the given slide's, best first.
+    def _image_source_key(self, slide_id: int) -> Optional[str]:
+        """Identify the rendered source, including changes to either PDF export."""
+        slide = self.slide(slide_id)
+        if slide is None:
+            return None
+        deck = self.deck(slide.deck_id)
+        if deck is None or not (self.folder / deck.pptx_path).is_file():
+            return None
+        pdf = deck.hidden_pdf_path if slide.hidden else deck.pdf_path
+        if not pdf:
+            return None
+        try:
+            stat = (self.folder / pdf).stat()
+            pptx_stat = (self.folder / deck.pptx_path).stat()
+        except OSError:
+            return None
+        return repr((pdf, stat.st_mtime_ns, stat.st_size, pptx_stat.st_mtime_ns,
+                     slide.index_in_deck, slide.visible_pdf_page, slide.hidden))
 
-        Returns an empty list if the slide has no cached embedding yet.
+    def embed_images_pending(self, limit: int = 20, stop_event=None) -> int:
+        """Cache all renderable slides, including hidden slides and empty text.
+
+        Rendering and inference run outside the DB lock. Recheck the source before
+        writing so a concurrent refresh cannot store an obsolete vector.
         """
+        count = 0
+        with self._image_embedding_lock:
+            with self._conn_lock:
+                rows = self.conn.execute(
+                    "SELECT s.id, e.model, e.source_key FROM slides s "
+                    "LEFT JOIN slide_image_embeddings e ON e.slide_id = s.id ORDER BY s.id"
+                ).fetchall()
+            for row in rows:
+                if count >= limit or (stop_event is not None and stop_event.is_set()):
+                    break
+                key = self._image_source_key(row["id"])
+                if key is None or (row["model"] == self.IMAGE_EMBEDDING_MODEL
+                                   and row["source_key"] == key):
+                    continue
+                try:
+                    with self.slide_image(row["id"]) as image:
+                        vector = image_embeddings.embed_image(image, self.IMAGE_EMBEDDING_MODEL)
+                except embeddings.EmbeddingError:
+                    # Model/dependency failures affect every slide; retry next pass.
+                    raise
+                except Exception as exc:
+                    log.warning("Image rendering failed for slide %s: %s", row["id"], exc)
+                    continue
+                with self._conn_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                    if self._image_source_key(row["id"]) != key:
+                        continue
+                    self.conn.execute(
+                        "INSERT INTO slide_image_embeddings "
+                        "(slide_id, model, source_key, vector, updated_at) VALUES (?, ?, ?, ?, ?) "
+                        "ON CONFLICT(slide_id) DO UPDATE SET model=excluded.model, "
+                        "source_key=excluded.source_key, vector=excluded.vector, updated_at=excluded.updated_at",
+                        (row["id"], self.IMAGE_EMBEDDING_MODEL, key,
+                         embeddings.pack_vector(vector), time.time()),
+                    )
+                    self.conn.commit()
+                count += 1
+        return count
+
+    def _similar_cached(self, slide_id: int, image: bool = False) -> List[int]:
+        table = "slide_image_embeddings" if image else "slide_embeddings"
+        model = self.IMAGE_EMBEDDING_MODEL if image else self.EMBEDDING_MODEL
         with self._conn_lock:
             row = self.conn.execute(
-                "SELECT vector FROM slide_embeddings WHERE slide_id = ? AND model = ?",
-                (slide_id, self.EMBEDDING_MODEL),
+                f"SELECT * FROM {table} WHERE slide_id = ? AND model = ?",
+                (slide_id, model),
             ).fetchone()
-            if row is None:
+            if row is None or (image and row["source_key"] != self._image_source_key(slide_id)):
                 return []
             target = embeddings.unpack_vector(row["vector"])
             rows = self.conn.execute(
-                "SELECT slide_id, vector FROM slide_embeddings WHERE model = ? AND slide_id != ?",
-                (self.EMBEDDING_MODEL, slide_id),
+                f"SELECT * FROM {table} WHERE model = ? AND slide_id != ? ORDER BY slide_id",
+                (model, slide_id),
             ).fetchall()
         scored = [
             (embeddings.cosine_similarity(target, embeddings.unpack_vector(row["vector"])), row["slide_id"])
             for row in rows
+            if not image or row["source_key"] == self._image_source_key(row["slide_id"])
         ]
         scored.sort(key=lambda t: t[0], reverse=True)
-        slides = [self.slide(sid) for _, sid in scored[:top_k]]
+        return [sid for _, sid in scored]
+
+    def similar_slides(self, slide_id: int, top_k: int = 16) -> List[Slide]:
+        """Image matches first, then additional text matches, in one deduplicated list.
+
+        Reserve half the slots for visual matches. Fill unused slots from either
+        cache without comparing scores from different embedding spaces.
+        """
+        if top_k <= 0:
+            return []
+        visual = self._similar_cached(slide_id, image=True)
+        textual = self._similar_cached(slide_id)
+        ids = list(dict.fromkeys(visual[:(top_k + 1) // 2] + textual + visual))[:top_k]
+        slides = [self.slide(sid) for sid in ids]
         return [s for s in slides if s is not None]
 
     def search_semantic(self, query: str, top_k: int = 20) -> List[Slide]:

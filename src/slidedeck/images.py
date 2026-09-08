@@ -11,7 +11,7 @@ from PIL import Image
 
 def _cache_key(pdf_path: Path, page: int, dpi: int) -> str:
     stat = pdf_path.stat()
-    raw = f"{pdf_path}|{stat.st_mtime}|{page}|{dpi}"
+    raw = f"{pdf_path}|{stat.st_mtime_ns}|{stat.st_size}|{page}|{dpi}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
