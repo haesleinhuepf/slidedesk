@@ -31,6 +31,18 @@ starts scanning it for `.pptx` files in the background, and opens a browser GUI 
 
 ## Python API
 
+Embeddings use KIARA by default (requires `KIARA_API_KEY`). To use local Ollama
+embeddings, start Ollama and download the model, then pass `--local`:
+
+```bash
+ollama pull jeffh/intfloat-multilingual-e5-large-instruct:f32
+slidedeck serve /path/to/folder --local
+```
+
+Local mode uses `http://localhost:11434/v1/` and does not need a KIARA API key.
+In Python, use `SlideProject("/path/to/folder", local=True)`.
+Switching providers recomputes cached slide embeddings for the selected model.
+
 ```python
 from slidedeck import SlideProject
 
@@ -44,8 +56,13 @@ for deck in project.decks():
         image = project.slide_image(slide.id)  # PIL.Image.Image
 
 results = project.search("quarterly results")
-project.export_selection([s.id for s in results], "export.pptx")
+export_path = project.export_selection([s.id for s in results])
 ```
+
+Exports are saved in a temporary directory outside the source deck folder and
+served from there for download. They are removed when `project.close()` is called.
+Downloads are automatically named `export_1.pptx`, `export_2.pptx`, and so on
+within each project session, without a filename prompt.
 
 ## GUI features
 

@@ -14,7 +14,7 @@
   const SLIDE_WIDTH = Math.round((SLIDE_HEIGHT * 16) / 9);
   const GAP = 18;
   const CELL_W = SLIDE_WIDTH + GAP;
-  const CELL_H = SLIDE_HEIGHT + GAP;
+  const CELL_H = SLIDE_HEIGHT + 16 + GAP; // Include the label below each slide.
   const POOL_COLUMNS = 8;
   const DECK_ROW_LENGTH = 10; // wrap the full-deck view every this many slides
   const LONG_PRESS_MS = 1000;
@@ -80,13 +80,26 @@
     });
   }
 
+  function showStatusProgress(el, label, value, detail = label) {
+    el.replaceChildren();
+    el.title = detail;
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    const progress = document.createElement("progress");
+    progress.max = 100;
+    if (value !== null) progress.value = value;
+    progress.setAttribute("aria-label", detail);
+    el.append(caption, progress);
+  }
+
   async function pollScanStatus() {
     try {
       const res = await fetch("/api/scan/status");
       const status = await res.json();
       const el = document.getElementById("scan-status");
+      el.title = "";
       if (status.running) {
-        el.textContent = "Scanning… " + (status.current_file || "");
+        showStatusProgress(el, "Scanning…", null, "Scanning… " + (status.current_file || ""));
       } else if (status.error) {
         el.textContent = "Scan error: " + status.error;
       } else if (status.last_run_finished) {
@@ -104,11 +117,13 @@
       const res = await fetch("/api/embeddings/status");
       const status = await res.json();
       const el = document.getElementById("embedding-status");
+      el.title = "";
       if (!status.available || !status.total) {
         el.textContent = "";
       } else if (status.embedded < status.total) {
         const pct = Math.round((status.embedded / status.total) * 100);
-        el.textContent = `Embedding slides… ${pct}% (${status.embedded}/${status.total})`;
+        showStatusProgress(el, `Embedding… ${pct}%`, pct,
+          `Embedding slides: ${status.embedded}/${status.total}`);
       } else {
         el.textContent = "";
       }
@@ -649,12 +664,10 @@
 
   // -- export --------------------------------------------------------------
   async function exportSelection() {
-    const filename = window.prompt("Export filename:", "export.pptx");
-    if (!filename) return;
     const res = await fetch("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slide_ids: Array.from(state.selection), filename }),
+      body: JSON.stringify({ slide_ids: Array.from(state.selection) }),
     });
     const data = await res.json();
     if (data.error) {

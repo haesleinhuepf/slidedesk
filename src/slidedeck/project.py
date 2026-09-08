@@ -4,6 +4,7 @@ PDF conversion, slide-image rendering and search/export over one project folder.
 from __future__ import annotations
 
 import logging
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -23,12 +24,16 @@ DB_FILENAME = "slidedeck.db"
 CACHE_DIRNAME = ".slidedeck_cache"
 
 
+
 class SlideProject:
     """Opens or creates a slidedeck project rooted at `folder`."""
 
     EMBEDDING_MODEL = embeddings.DEFAULT_MODEL
 
-    def __init__(self, folder: str | Path):
+    def __init__(self, folder: str | Path, local: bool = False):
+        self.local = local
+        if local:
+            self.EMBEDDING_MODEL = embeddings.LOCAL_MODEL
         self.folder = Path(folder).expanduser().resolve()
         self.folder.mkdir(parents=True, exist_ok=True)
         self.db_path = self.folder / DB_FILENAME
@@ -44,6 +49,10 @@ class SlideProject:
             "error": None,
         }
         self._scanner: Optional[BackgroundScanner] = None
+        self._export_tempdir = tempfile.TemporaryDirectory(prefix="slidedeck-exports-")
+        self.export_dir = Path(self._export_tempdir.name)
+        self._export_lock = threading.Lock()
+        self._export_number = 0
 
     # -- indexing -----------------------------------------------------
     def scan(self) -> None:
@@ -74,6 +83,7 @@ class SlideProject:
         self.stop_background_scan()
         convert.shutdown()
         self.conn.close()
+        self._export_tempdir.cleanup()
 
     # -- reading data ---------------------------------------------------
     def decks(self) -> List[Deck]:
@@ -117,6 +127,13 @@ class SlideProject:
         return [Slide.from_row(r) for r in rows]
 
     # -- semantic search --------------------------------------------------
+    def _embeddings_available(self) -> bool:
+        return embeddings.is_available(local=True) if self.local else embeddings.is_available()
+
+    def _embed(self, text: str) -> List[float]:
+        embed = embeddings.embed_local if self.local else embeddings.embed_kiara
+        return embed(text, embedding_model=self.EMBEDDING_MODEL)
+
     def embedding_status(self) -> dict:
         """Report whether semantic search is usable, and cache coverage."""
         with self._conn_lock:
@@ -127,13 +144,13 @@ class SlideProject:
                 "SELECT COUNT(*) AS c FROM slide_embeddings WHERE model = ?",
                 (self.EMBEDDING_MODEL,),
             ).fetchone()["c"]
-        return {"available": embeddings.is_available(), "total": total, "embedded": done}
+        return {"available": self._embeddings_available(), "total": total, "embedded": done}
 
     def embed_pending(self, limit: int = 20) -> int:
         """Compute and cache embeddings for up to `limit` slides that don't yet
         have one for the current model. Returns the number of slides embedded.
         """
-        if not embeddings.is_available():
+        if not self._embeddings_available():
             return 0
         with self._conn_lock:
             rows = self.conn.execute(
@@ -147,9 +164,9 @@ class SlideProject:
         count = 0
         for row in rows:
             try:
-                vector = embeddings.embed_kiara(row["text"][:1024], embedding_model=self.EMBEDDING_MODEL)
+                vector = self._embed(row["text"][:1024])
             except Exception as exc:
-                log.warning("Embedding failed for slide %s: %s", row["id"], exc, row["text"])
+                log.warning("Embedding failed for slide %s: %s", row["id"], exc)
                 continue
             with self._conn_lock:
                 self.conn.execute(
@@ -190,7 +207,7 @@ class SlideProject:
 
     def search_semantic(self, query: str, top_k: int = 20) -> List[Slide]:
         """Embedding-based semantic search over cached slide vectors, best matches first."""
-        query_vector = embeddings.embed_kiara(query, embedding_model=self.EMBEDDING_MODEL)
+        query_vector = self._embed(query)
         with self._conn_lock:
             rows = self.conn.execute(
                 "SELECT slide_id, vector FROM slide_embeddings WHERE model = ?",
@@ -243,9 +260,11 @@ class SlideProject:
         return slide.text
 
     # -- export -----------------------------------------------------------
-    def export_selection(self, slide_ids: List[int], out_filename: str) -> Path:
+    def export_selection(self, slide_ids: List[int], out_filename: Optional[str] = None) -> Path:
         """Copy the given slides (by id, in the given order) into a new .pptx
-        saved inside the project folder, returning its path.
+        saved in a temporary folder, returning its path. Exports remain available
+        until the project is closed. By default, filenames are numbered starting
+        at export_1.pptx for each project session.
         """
         if not slide_ids:
             raise ValueError("No slides selected for export")
@@ -265,8 +284,16 @@ class SlideProject:
         if not pairs or template_path is None:
             raise ValueError("None of the given slide ids exist")
 
-        out_path = self.folder / out_filename
-        if out_path.suffix.lower() != ".pptx":
-            out_path = out_path.with_suffix(".pptx")
-        pptx_tools.save_selection_as_pptx(pairs, template_path, out_path)
+        with self._export_lock:
+            if out_filename is None:
+                while True:
+                    self._export_number += 1
+                    out_path = self.export_dir / f"export_{self._export_number}.pptx"
+                    if not out_path.exists():
+                        break
+            else:
+                out_path = self.export_dir / Path(out_filename).name
+                if out_path.suffix.lower() != ".pptx":
+                    out_path = out_path.with_suffix(".pptx")
+            pptx_tools.save_selection_as_pptx(pairs, template_path, out_path)
         return out_path

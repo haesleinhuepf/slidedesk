@@ -19,6 +19,7 @@ def main() -> None:
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=5000, show_default=True, type=int)
 @click.option("--no-browser", is_flag=True, help="Don't open a browser window.")
+@click.option("--local", is_flag=True, help="Compute embeddings using Ollama on localhost.")
 @click.option(
     "--scan-interval",
     default=5.0,
@@ -26,11 +27,11 @@ def main() -> None:
     type=float,
     help="Seconds between background folder scans.",
 )
-def serve(folder: str, host: str, port: int, no_browser: bool, scan_interval: float) -> None:
+def serve(folder: str, host: str, port: int, no_browser: bool, scan_interval: float, local: bool = False) -> None:
     """Open (or create) a project in FOLDER and start the GUI server."""
     from .server.app import create_app
 
-    project = SlideProject(folder)
+    project = SlideProject(folder, local=local)
     project.scan_in_background(interval=scan_interval)
 
     app = create_app(project)

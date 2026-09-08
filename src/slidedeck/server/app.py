@@ -159,10 +159,8 @@ def create_app(project: SlideProject) -> Flask:
     def api_export():
         body = request.get_json(force=True, silent=True) or {}
         slide_ids = body.get("slide_ids") or []
-        filename = body.get("filename") or "export.pptx"
-        filename = Path(filename).name  # no path traversal
         try:
-            out_path = project.export_selection([int(i) for i in slide_ids], filename)
+            out_path = project.export_selection([int(i) for i in slide_ids])
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"ok": True, "path": out_path.name})
@@ -170,7 +168,7 @@ def create_app(project: SlideProject) -> Flask:
     @app.get("/api/export/<path:filename>/download")
     def api_export_download(filename):
         filename = Path(filename).name
-        out_path = project.folder / filename
+        out_path = project.export_dir / filename
         if not out_path.exists():
             return jsonify({"error": "not found"}), 404
         return send_file(out_path, as_attachment=True, download_name=filename)

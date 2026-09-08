@@ -13,17 +13,22 @@ from typing import List, Sequence
 
 DEFAULT_BASE_URL = "https://kiara.sc.uni-leipzig.de/api/"
 DEFAULT_MODEL = "vllm-multilingual-e5-large-instruct"
+LOCAL_BASE_URL = "http://localhost:11434/v1/"
+LOCAL_MODEL = "jeffh/intfloat-multilingual-e5-large-instruct:f32"
 
 
 class EmbeddingError(RuntimeError):
     """Raised when an embedding could not be computed (missing deps/key, API error, ...)."""
 
 
-def _get_client():
+def _get_client(local: bool = False):
     try:
         from openai import OpenAI
     except ImportError as exc:
         raise EmbeddingError("The 'openai' package is required for semantic search") from exc
+
+    if local:
+        return OpenAI(base_url=LOCAL_BASE_URL, api_key="ollama")
 
     api_key = os.environ.get("KIARA_API_KEY")
     if not api_key:
@@ -33,10 +38,10 @@ def _get_client():
     return OpenAI(base_url=base_url, api_key=api_key)
 
 
-def is_available() -> bool:
-    """Whether semantic search can plausibly be used (deps + API key present)."""
+def is_available(local: bool = False) -> bool:
+    """Check client prerequisites; does not probe server or model availability."""
     try:
-        _get_client()
+        _get_client(local=local)
     except EmbeddingError:
         return False
     return True
@@ -45,6 +50,13 @@ def is_available() -> bool:
 def embed_kiara(text: str, embedding_model: str = DEFAULT_MODEL, client=None) -> List[float]:
     """Embed `text` using the KIARA OpenAI-compatible embeddings endpoint."""
     client = client or _get_client()
+    response = client.embeddings.create(model=embedding_model, input=text)
+    return response.data[0].embedding
+
+
+def embed_local(text: str, embedding_model: str = LOCAL_MODEL, client=None) -> List[float]:
+    """Embed `text` using Ollama's local OpenAI-compatible endpoint."""
+    client = client or _get_client(local=True)
     response = client.embeddings.create(model=embedding_model, input=text)
     return response.data[0].embedding
 

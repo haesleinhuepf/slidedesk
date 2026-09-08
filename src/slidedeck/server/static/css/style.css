@@ -78,6 +78,44 @@ button:not(:disabled):hover { border-color: var(--accent); }
 #scan-status { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
 #embedding-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
+#scan-status, #embedding-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#toolbar progress {
+  appearance: none;
+  width: 140px;
+  height: 6px;
+  border: 0;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #14161a;
+  accent-color: var(--accent);
+}
+
+#toolbar progress::-webkit-progress-bar { background: #14161a; }
+#toolbar progress::-webkit-progress-value { background: var(--accent); }
+#toolbar progress::-moz-progress-bar { background: var(--accent); }
+
+#toolbar progress:indeterminate {
+  background: linear-gradient(var(--accent), var(--accent)) no-repeat #14161a;
+  background-size: 35% 100%;
+  animation: status-progress 1.4s ease-in-out infinite alternate;
+}
+#toolbar progress:indeterminate::-webkit-progress-bar { background: transparent; }
+#toolbar progress:indeterminate::-moz-progress-bar { background: transparent; }
+
+@keyframes status-progress {
+  from { background-position: 0% 0; }
+  to { background-position: 100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #toolbar progress:indeterminate { animation: none; background-position: center; }
+}
+
 #viewport {
   position: absolute;
   top: 52px; left: 0; right: var(--selection-width); bottom: 0;
@@ -178,7 +216,7 @@ button:not(:disabled):hover { border-color: var(--accent); }
   position: absolute;
   border: 2px solid transparent;
   border-radius: 4px;
-  overflow: hidden;
+  overflow: visible;
   background: #000;
   cursor: pointer;
 }
@@ -211,10 +249,12 @@ button:not(:disabled):hover { border-color: var(--accent); }
 }
 .slide-thumb .deck-label {
   position: absolute;
-  left: 2px; bottom: 2px;
-  right: 2px;
-  background: rgba(0,0,0,0.55);
-  color: var(--muted);
+  left: -2px; top: calc(100% + 2px);
+  right: -2px;
+  height: 16px;
+  line-height: 14px;
+  background: var(--panel);
+  color: #fff;
   font-size: 9px;
   padding: 1px 4px;
   white-space: nowrap;
