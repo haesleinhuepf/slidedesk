@@ -113,6 +113,16 @@ def create_app(project: SlideProject) -> Flask:
         results.sort(key=lambda d: min(rank[s["id"]] for s in d["matched_slides"]))
         return jsonify(results)
 
+    @app.get("/api/slides/<int:slide_id>/similar")
+    def api_slide_similar(slide_id):
+        if project.slide(slide_id) is None:
+            return jsonify({"error": "slide not found"}), 404
+        try:
+            slides = project.similar_slides(slide_id)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify([slide_to_json(s) for s in slides])
+
     @app.get("/api/embeddings/status")
     def api_embeddings_status():
         return jsonify(project.embedding_status())

@@ -163,6 +163,31 @@ class SlideProject:
             count += 1
         return count
 
+    def similar_slides(self, slide_id: int, top_k: int = 16) -> List[Slide]:
+        """Slides whose cached embedding is closest to the given slide's, best first.
+
+        Returns an empty list if the slide has no cached embedding yet.
+        """
+        with self._conn_lock:
+            row = self.conn.execute(
+                "SELECT vector FROM slide_embeddings WHERE slide_id = ? AND model = ?",
+                (slide_id, self.EMBEDDING_MODEL),
+            ).fetchone()
+            if row is None:
+                return []
+            target = embeddings.unpack_vector(row["vector"])
+            rows = self.conn.execute(
+                "SELECT slide_id, vector FROM slide_embeddings WHERE model = ? AND slide_id != ?",
+                (self.EMBEDDING_MODEL, slide_id),
+            ).fetchall()
+        scored = [
+            (embeddings.cosine_similarity(target, embeddings.unpack_vector(row["vector"])), row["slide_id"])
+            for row in rows
+        ]
+        scored.sort(key=lambda t: t[0], reverse=True)
+        slides = [self.slide(sid) for _, sid in scored[:top_k]]
+        return [s for s in slides if s is not None]
+
     def search_semantic(self, query: str, top_k: int = 20) -> List[Slide]:
         """Embedding-based semantic search over cached slide vectors, best matches first."""
         query_vector = embeddings.embed_kiara(query, embedding_model=self.EMBEDDING_MODEL)

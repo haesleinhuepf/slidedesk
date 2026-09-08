@@ -25,8 +25,19 @@
     <span id="embedding-status"></span>
   </header>
 
+  <div id="view-breadcrumb" class="hidden">
+    <span id="view-breadcrumb-label"></span>
+    <button id="deck-refresh-btn" class="hidden">↻ Refresh deck</button>
+    <button id="back-to-overview-btn">← Back</button>
+  </div>
+
   <div id="viewport">
     <div id="canvas"></div>
+  </div>
+
+  <div id="slide-context-menu" class="context-menu">
+    <button id="menu-show-in-deck">Show slide in slide deck</button>
+    <button id="menu-show-similar">Show similar slides</button>
   </div>
 
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>

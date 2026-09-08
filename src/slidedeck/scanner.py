@@ -141,6 +141,10 @@ def scan_once(
         conn.commit()
 
     if deck_id is not None:
+        if target_path not in seen_paths:
+            # The deck's source .pptx is gone; drop the stale record.
+            conn.execute("DELETE FROM decks WHERE id = ?", (deck_id,))
+            conn.commit()
         project._status["current_file"] = None
         return
 
