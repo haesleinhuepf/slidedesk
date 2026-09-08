@@ -4,8 +4,8 @@
  *   - "search": only slides matching the current search query.
  *   - "deck":   the full deck of a clicked slide, laid out left-to-right,
  *               with the clicked slide staying exactly where it was.
- *   - "similar": embedding-based similar slides, force-laid-out vertically
- *               with grid snapping (see startSimilarSimulation).
+ *   - "similar": embedding-based similar slides, laid out in a deck-style
+ *               horizontal wrap, like the slide-deck view.
  */
 (function () {
   "use strict";
@@ -16,7 +16,7 @@
   const CELL_W = SLIDE_WIDTH + GAP;
   const CELL_H = SLIDE_HEIGHT + GAP;
   const POOL_COLUMNS = 8;
-  const DECK_ROW_LENGTH = 20; // wrap the full-deck view every this many slides
+  const DECK_ROW_LENGTH = 10; // wrap the full-deck view every this many slides
   const LONG_PRESS_MS = 1000;
   const MOVE_CANCEL_PX = 6;
 
@@ -277,63 +277,17 @@
   function startSimilarSimulation(sourceSlide, similarSlides, anchor) {
     if (state.simulation) state.simulation.stop();
 
-    const nodes = [sourceSlide, ...similarSlides].map((slide, i) => {
-      const jitter = i === 0 ? 0 : 60;
-      return {
-        id: slide.id,
-        slide,
-        deck: state.deckById.get(slide.deck_id) || { id: slide.deck_id, name: "(deck)" },
-        rank: i,
-        x: anchor.x + (Math.random() - 0.5) * jitter,
-        y: anchor.y + i * 24 + (Math.random() - 0.5) * jitter,
-      };
-    });
+    const items = [sourceSlide, ...similarSlides].map((slide, i) => ({
+      slide,
+      deck: state.deckById.get(slide.deck_id) || { id: slide.deck_id, name: "(deck)" },
+      x: anchor.x + (i % DECK_ROW_LENGTH) * CELL_W,
+      y: anchor.y + Math.floor(i / DECK_ROW_LENGTH) * CELL_H,
+      enterFrom: { x: anchor.x, y: anchor.y },
+    }));
 
-    const items = nodes.map((n) => ({ slide: n.slide, deck: n.deck, x: n.x, y: n.y, enterFrom: { x: anchor.x, y: anchor.y } }));
     renderStatic(items);
     updateBreadcrumb();
-
-    function applyNodePositions(transition) {
-      let selection = canvas.selectAll(".slide-thumb").filter((d) => nodes.some((n) => n.id === d.slide.id));
-      if (transition) selection = selection.transition().duration(400);
-      selection
-        .style("left", function (d) {
-          const n = nodes.find((node) => node.id === d.slide.id);
-          return n ? `${n.x}px` : this.style.left;
-        })
-        .style("top", function (d) {
-          const n = nodes.find((node) => node.id === d.slide.id);
-          return n ? `${n.y}px` : this.style.top;
-        });
-    }
-
-    const radius = Math.hypot(SLIDE_WIDTH, SLIDE_HEIGHT) / 2 + 6;
-    // ~60 ticks at the default d3 timer rate settles in roughly one second.
-    const alphaDecay = 1 - Math.pow(0.001, 1 / 60);
-
-    const simulation = d3
-      .forceSimulation(nodes)
-      .alphaDecay(alphaDecay)
-      .force("collide", d3.forceCollide(radius).iterations(2))
-      .force("x", d3.forceX(anchor.x).strength(0.12))
-      .force("y", d3.forceY((d) => anchor.y + d.rank * CELL_H).strength(0.35))
-      .on("tick", () => applyNodePositions(false))
-      .on("end", () => {
-        // Snap every slide to the nearest free grid cell, then let it relax there.
-        const occupied = new Set();
-        nodes.forEach((n) => {
-          let col = Math.round((n.x - anchor.x) / CELL_W);
-          let row = Math.round((n.y - anchor.y) / CELL_H);
-          while (occupied.has(`${col},${row}`)) row += 1;
-          occupied.add(`${col},${row}`);
-          n.x = anchor.x + col * CELL_W;
-          n.y = anchor.y + row * CELL_H;
-        });
-        applyNodePositions(true);
-        state.simulation = null;
-      });
-
-    state.simulation = simulation;
+    state.simulation = null;
   }
 
   // -- click / long-press handling ------------------------------------------
