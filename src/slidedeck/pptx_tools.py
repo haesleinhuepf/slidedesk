@@ -140,8 +140,12 @@ def save_selection_as_pptx(
     so theme/master/size match one of the source decks.
     """
     dest = Presentation(str(template_path))
-    while len(dest.slides._sldIdLst):
-        dest.slides._sldIdLst.remove(dest.slides._sldIdLst[0])
+    # Detach the original parts as well as their slide-list entries. Otherwise
+    # newly added slides reuse their part names (slide1.xml, etc.), leaving
+    # duplicate ZIP entries that PowerPoint can resolve to the wrong slides.
+    for slide_id in list(dest.slides._sldIdLst):
+        dest.part.drop_rel(slide_id.rId)
+        dest.slides._sldIdLst.remove(slide_id)
 
     open_decks = {}
     for pptx_path, index in source_pptx_paths_and_indices:

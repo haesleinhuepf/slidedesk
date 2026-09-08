@@ -18,9 +18,6 @@
       <input id="toggle-hidden" type="checkbox" />
       Show hidden slides
     </label>
-    <span id="selection-count">0 selected</span>
-    <button id="export-btn" disabled>Export selection</button>
-    <button id="clear-selection-btn" disabled>Clear selection</button>
     <span id="scan-status"></span>
     <span id="embedding-status"></span>
   </header>
@@ -35,9 +32,21 @@
     <div id="canvas"></div>
   </div>
 
+  <aside id="selection-bar" aria-label="Selected slides">
+    <h2>Selected slides</h2>
+    <span id="selection-count">0 selected</span>
+    <div id="selection-actions">
+      <button id="export-btn" disabled>Export selection</button>
+      <button id="clear-selection-btn" disabled>Clear selection</button>
+    </div>
+    <p id="selection-help">Double-click slides to select them. Drag to reorder.</p>
+    <div id="selected-slides" aria-label="Selection order"></div>
+  </aside>
+
   <div id="slide-context-menu" class="context-menu">
-    <button id="menu-show-in-deck">Show slide in slide deck</button>
-    <button id="menu-show-similar">Show similar slides</button>
+    <button id="menu-show-in-deck">Show in deck</button>
+    <button id="menu-show-similar">Show similar</button>
+    <button id="menu-remove" hidden>Remove</button>
   </div>
 
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>

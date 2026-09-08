@@ -6,6 +6,7 @@
   --accent: #4da3ff;
   --text: #e8eaed;
   --muted: #9aa0a8;
+  --selection-width: 250px;
 }
 
 * { box-sizing: border-box; }
@@ -79,7 +80,7 @@ button:not(:disabled):hover { border-color: var(--accent); }
 
 #viewport {
   position: absolute;
-  top: 52px; left: 0; right: 0; bottom: 0;
+  top: 52px; left: 0; right: var(--selection-width); bottom: 0;
   overflow: hidden;
   cursor: grab;
 }
@@ -93,7 +94,7 @@ button:not(:disabled):hover { border-color: var(--accent); }
 
 #view-breadcrumb {
   position: fixed;
-  top: 52px; left: 0; right: 0;
+  top: 52px; left: 0; right: var(--selection-width);
   z-index: 9;
   display: flex;
   align-items: center;
@@ -107,7 +108,29 @@ button:not(:disabled):hover { border-color: var(--accent); }
 #view-breadcrumb.hidden { display: none; }
 #view-breadcrumb button { font-size: 12px; padding: 5px 10px; }
 #view-breadcrumb button.hidden { display: none; }
-#view-breadcrumb ~ #viewport { top: 86px; }
+#view-breadcrumb:not(.hidden) ~ #viewport { top: 96px; }
+
+#selection-bar {
+  position: absolute;
+  top: 52px; right: 0; bottom: 0;
+  width: var(--selection-width);
+  padding: 16px;
+  background: var(--panel);
+  border-left: 1px solid #3a3f47;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+#selection-bar h2 { margin: 0 0 8px; font-size: 14px; }
+#selection-actions { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+#selection-help { margin: 0 0 16px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.selection-slide { display: block; width: 100%; margin-bottom: 12px; padding: 5px; cursor: grab; text-align: left; }
+.selection-slide img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; pointer-events: none; }
+.selection-slide span { display: block; padding-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.selection-slide.active { border-color: var(--accent); }
+.selection-slide.dragging { opacity: 0.4; }
+.selection-slide.drop-before { border-top: 3px solid var(--accent); }
+.selection-slide.drop-after { border-bottom: 3px solid var(--accent); }
+.selection-slide:focus-visible { outline: 2px solid var(--accent); }
 
 .context-menu {
   position: fixed;

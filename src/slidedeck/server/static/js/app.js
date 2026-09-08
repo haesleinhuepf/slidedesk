@@ -68,6 +68,7 @@
     const decks = await res.json();
     state.decks = decks;
     indexData();
+    updateSelectionUi();
     if (state.mode === "pool" || state.mode === "search") render();
   }
 
@@ -149,7 +150,7 @@
     const deck = state.deckById.get(state.focusDeckId);
     if (!deck) return [];
     const slides = deck.slides
-      .filter((s) => state.showHidden || !s.hidden)
+      .filter((s) => state.showHidden || !s.hidden || s.id === state.focusSlideId)
       .slice()
       .sort((a, b) => a.index_in_deck - b.index_in_deck);
     const rawFocusIdx = slides.findIndex((s) => s.id === state.focusSlideId);
@@ -251,8 +252,7 @@
     hideContextMenu();
     const entry = state.slidesById.get(slideId);
     if (!entry) return;
-    const rect = el.getBoundingClientRect();
-    const anchor = screenToCanvas(rect.left, rect.top);
+    const anchor = navigationAnchor(el);
 
     let similar;
     try {
@@ -344,8 +344,7 @@
   function onSlideClick(slideId, el) {
     const entry = state.slidesById.get(slideId);
     if (!entry) return;
-    const rect = el.getBoundingClientRect();
-    const anchor = screenToCanvas(rect.left, rect.top);
+    const anchor = navigationAnchor(el);
     state.viewAnchor = anchor;
     state.focusDeckId = entry.deck.id;
     state.focusSlideId = slideId;
@@ -364,11 +363,157 @@
   }
 
   function updateSelectionUi() {
+    for (const id of state.selection) {
+      if (!state.slidesById.has(id)) state.selection.delete(id);
+    }
     const count = state.selection.size;
     document.getElementById("selection-count").textContent = `${count} selected`;
     document.getElementById("export-btn").disabled = count === 0;
     document.getElementById("clear-selection-btn").disabled = count === 0;
+    renderSelectionBar();
   }
+
+  function navigationAnchor(el) {
+    if (el && canvasNode.contains(el)) {
+      const rect = el.getBoundingClientRect();
+      return screenToCanvas(rect.left, rect.top);
+    }
+    // Sidebar navigation starts inside the visible canvas, independent of pan/zoom.
+    d3.select(viewport).call(zoomBehavior.transform, d3.zoomIdentity.translate(24, 60));
+    return { x: 0, y: 0 };
+  }
+
+  const selectionList = document.getElementById("selected-slides");
+  let draggedSlideId = null;
+  let selectionPressTimer = null;
+  let selectionPressStart = null;
+  let selectionLongPress = false;
+
+  function renderSelectionBar() {
+    if (draggedSlideId !== null) return;
+    const cards = d3.select(selectionList).selectAll(".selection-slide")
+      .data(Array.from(state.selection), (id) => id)
+      .join("button")
+      .attr("type", "button")
+      .attr("class", (id) => `selection-slide${id === state.focusSlideId ? " active" : ""}`)
+      .attr("draggable", "true")
+      .attr("data-slide-id", (id) => id)
+      .attr("title", "Click to show in deck. Hold or right-click for actions. Alt+Arrow keys to reorder.");
+    cards.each(function (id, i) {
+      const { slide, deck } = state.slidesById.get(id);
+      const label = `${i + 1}. ${deck.name} #${slide.index_in_deck + 1}`;
+      this.setAttribute("aria-label", label);
+      const markup = `<img loading="lazy" draggable="false" src="/api/slides/${id}/image?dpi=90" alt="" /><span>${escapeHtml(label)}</span>`;
+      if (this.innerHTML !== markup) this.innerHTML = markup;
+    });
+    cards.order();
+  }
+
+  function cancelSelectionPress() {
+    clearTimeout(selectionPressTimer);
+    selectionPressStart = null;
+  }
+
+  selectionList.addEventListener("pointerdown", (event) => {
+    const card = event.target.closest(".selection-slide");
+    if (!card || event.button !== 0) return;
+    cancelSelectionPress();
+    selectionLongPress = false;
+    selectionPressStart = { x: event.clientX, y: event.clientY };
+    selectionPressTimer = setTimeout(() => {
+      selectionLongPress = true;
+      suppressNextDocumentClick = true;
+      showContextMenu(card, event.clientX, event.clientY);
+    }, LONG_PRESS_MS);
+  });
+  selectionList.addEventListener("pointermove", (event) => {
+    if (selectionPressStart && Math.hypot(event.clientX - selectionPressStart.x, event.clientY - selectionPressStart.y) > MOVE_CANCEL_PX) cancelSelectionPress();
+  });
+  document.addEventListener("pointerup", cancelSelectionPress);
+  selectionList.addEventListener("pointercancel", cancelSelectionPress);
+  selectionList.addEventListener("pointerleave", cancelSelectionPress);
+  selectionList.addEventListener("click", (event) => {
+    const card = event.target.closest(".selection-slide");
+    if (card && !selectionLongPress) {
+      hideContextMenu();
+      onSlideClick(Number(card.dataset.slideId), card);
+    }
+    selectionLongPress = false;
+  });
+  selectionList.addEventListener("contextmenu", (event) => {
+    const card = event.target.closest(".selection-slide");
+    if (!card) return;
+    event.preventDefault();
+    cancelSelectionPress();
+    showContextMenu(card, event.clientX, event.clientY);
+  });
+  selectionList.addEventListener("dragstart", (event) => {
+    const card = event.target.closest(".selection-slide");
+    if (!card) return;
+    cancelSelectionPress();
+    hideContextMenu();
+    draggedSlideId = Number(card.dataset.slideId);
+    event.dataTransfer.setData("text/plain", String(draggedSlideId));
+    event.dataTransfer.effectAllowed = "move";
+    card.classList.add("dragging");
+  });
+  function clearDropMarkers() {
+    selectionList.querySelectorAll(".drop-before, .drop-after").forEach((card) => card.classList.remove("drop-before", "drop-after"));
+  }
+  selectionList.addEventListener("dragover", (event) => {
+    if (draggedSlideId === null) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    clearDropMarkers();
+    const card = event.target.closest(".selection-slide");
+    if (card) {
+      const rect = card.getBoundingClientRect();
+      card.classList.add(event.clientY < rect.top + rect.height / 2 ? "drop-before" : "drop-after");
+    }
+    const bar = document.getElementById("selection-bar");
+    const bounds = bar.getBoundingClientRect();
+    if (event.clientY > bounds.bottom - 40) bar.scrollTop += 16;
+    if (event.clientY < bounds.top + 40) bar.scrollTop -= 16;
+  });
+  selectionList.addEventListener("drop", (event) => {
+    if (draggedSlideId === null) return;
+    event.preventDefault();
+    const card = event.target.closest(".selection-slide");
+    const targetId = card ? Number(card.dataset.slideId) : null;
+    if (targetId !== draggedSlideId) {
+      const ids = Array.from(state.selection).filter((id) => id !== draggedSlideId);
+      const index = card ? ids.indexOf(targetId) + (card.classList.contains("drop-after") ? 1 : 0) : ids.length;
+      ids.splice(index, 0, draggedSlideId);
+      state.selection = new Set(ids);
+    }
+    draggedSlideId = null;
+    updateSelectionUi();
+  });
+  selectionList.addEventListener("dragend", () => {
+    draggedSlideId = null;
+    clearDropMarkers();
+    updateSelectionUi();
+  });
+  selectionList.addEventListener("keydown", (event) => {
+    const card = event.target.closest(".selection-slide");
+    if (!card) return;
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+      event.preventDefault();
+      const rect = card.getBoundingClientRect();
+      showContextMenu(card, rect.left, rect.top);
+    }
+    if (event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+      const ids = Array.from(state.selection);
+      const index = ids.indexOf(Number(card.dataset.slideId));
+      const next = index + (event.key === "ArrowUp" ? -1 : 1);
+      if (next < 0 || next >= ids.length) return;
+      [ids[index], ids[next]] = [ids[next], ids[index]];
+      state.selection = new Set(ids);
+      updateSelectionUi();
+      card.focus();
+    }
+  });
 
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, (c) => ({
@@ -388,9 +533,15 @@
   function showContextMenu(el, clientX, clientY) {
     const menu = document.getElementById("slide-context-menu");
     menu.dataset.slideId = el.getAttribute("data-slide-id");
+    menu.dataset.source = selectionList.contains(el) ? "selection" : "canvas";
+    document.getElementById("menu-remove").hidden = menu.dataset.source !== "selection";
     menu.style.left = `${clientX}px`;
     menu.style.top = `${clientY}px`;
     menu.classList.add("visible");
+    const bounds = menu.getBoundingClientRect();
+    const left = menu.dataset.source === "selection" ? el.getBoundingClientRect().left - bounds.width - 8 : clientX;
+    menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - bounds.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(clientY, window.innerHeight - bounds.height - 8))}px`;
     setPanZoomEnabled(false);
   }
 
@@ -403,14 +554,14 @@
     const menu = document.getElementById("slide-context-menu");
     const slideId = Number(menu.dataset.slideId);
     hideContextMenu();
-    const el = canvasNode.querySelector(`.slide-thumb[data-slide-id="${slideId}"]`);
+    const el = contextSlideElement(menu, slideId);
     if (el) onSlideClick(slideId, el);
   });
 
   document.getElementById("menu-show-similar").addEventListener("click", () => {
     const menu = document.getElementById("slide-context-menu");
     const slideId = Number(menu.dataset.slideId);
-    const el = canvasNode.querySelector(`.slide-thumb[data-slide-id="${slideId}"]`);
+    const el = contextSlideElement(menu, slideId);
     if (el) showSimilar(slideId, el);
   });
 
@@ -421,6 +572,20 @@
     }
     const menu = document.getElementById("slide-context-menu");
     if (menu.classList.contains("visible") && !menu.contains(event.target)) hideContextMenu();
+  });
+
+  function contextSlideElement(menu, slideId) {
+    const container = menu.dataset.source === "selection" ? selectionList : canvasNode;
+    return container.querySelector(`[data-slide-id="${slideId}"]`);
+  }
+
+  document.getElementById("menu-remove").addEventListener("click", () => {
+    const id = Number(document.getElementById("slide-context-menu").dataset.slideId);
+    hideContextMenu();
+    if (state.selection.has(id)) toggleSelection(id);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideContextMenu();
   });
 
   // -- deck refresh -------------------------------------------------------------
