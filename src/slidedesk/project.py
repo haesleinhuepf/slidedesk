@@ -20,8 +20,8 @@ from .scanner import BackgroundScanner, scan_once
 
 log = logging.getLogger(__name__)
 
-DB_FILENAME = "slidedeck.db"
-CACHE_DIRNAME = ".slidedeck_cache"
+DB_FILENAME = "slidedesk.db"
+CACHE_DIRNAME = ".slidedesk_cache"
 
 
 
