@@ -15,7 +15,7 @@
   const GAP = 18;
   const CELL_W = SLIDE_WIDTH + GAP;
   const CELL_H = SLIDE_HEIGHT + 16 + GAP; // Include the label below each slide.
-  const POOL_COLUMNS = 8;
+  const POOL_COLUMNS = 5;
   const DECK_ROW_LENGTH = 10; // wrap the full-deck view every this many slides
   const LONG_PRESS_MS = 1000;
   const MOVE_CANCEL_PX = 6;
@@ -38,6 +38,7 @@
   };
 
   const canvas = d3.select("#canvas");
+  let homeRevision = 0;
   const canvasNode = canvas.node();
   const viewport = document.getElementById("viewport");
 
@@ -267,6 +268,7 @@
 
   // -- similar-slides force layout --------------------------------------------
   async function showSimilar(slideId, el) {
+    const revision = homeRevision;
     hideContextMenu();
     const entry = state.slidesById.get(slideId);
     if (!entry) return;
@@ -276,8 +278,10 @@
     try {
       const res = await fetch(`/api/slides/${slideId}/similar`);
       similar = await res.json();
+      if (revision !== homeRevision) return;
       if (similar && !Array.isArray(similar) && similar.error) throw new Error(similar.error);
     } catch (err) {
+      if (revision !== homeRevision) return;
       window.alert("Could not load similar slides: " + err.message);
       return;
     }
@@ -317,7 +321,7 @@
 
   canvasNode.addEventListener("pointerdown", (event) => {
     const el = event.target.closest(".slide-thumb");
-    if (!el) return;
+    if (!el || event.button !== 0) return;
     pressEl = el;
     pressStart = { x: event.clientX, y: event.clientY };
     longPressFired = false;
@@ -339,7 +343,8 @@
     }
   });
 
-  canvasNode.addEventListener("pointerup", () => {
+  canvasNode.addEventListener("pointerup", (event) => {
+    if (event.button !== 0) return;
     clearTimeout(pressTimer);
     const el = pressEl;
     pressEl = null;
@@ -352,13 +357,21 @@
 
   canvasNode.addEventListener("pointerleave", () => clearTimeout(pressTimer));
 
-  canvasNode.addEventListener("dblclick", (event) => {
+  canvasNode.addEventListener("contextmenu", (event) => {
     const el = event.target.closest(".slide-thumb");
     if (!el) return;
     event.preventDefault();
-    // Keep slide selection from triggering the viewport's double-click zoom.
+    clearTimeout(pressTimer);
+    pressEl = null;
+    pressStart = null;
+    showContextMenu(el, event.clientX, event.clientY);
+  });
+
+  canvasNode.addEventListener("dblclick", (event) => {
+    if (!event.target.closest(".slide-thumb")) return;
+    event.preventDefault();
+    // Slides have no double-click action, including the viewport's default zoom.
     event.stopPropagation();
-    toggleSelection(Number(el.getAttribute("data-slide-id")));
   });
 
   function onSlideClick(slideId, el) {
@@ -555,6 +568,7 @@
     menu.dataset.slideId = el.getAttribute("data-slide-id");
     menu.dataset.source = selectionList.contains(el) ? "selection" : "canvas";
     document.getElementById("menu-remove").hidden = menu.dataset.source !== "selection";
+    document.getElementById("menu-add-selection").disabled = state.selection.has(Number(menu.dataset.slideId));
     menu.style.left = `${clientX}px`;
     menu.style.top = `${clientY}px`;
     menu.classList.add("visible");
@@ -569,6 +583,33 @@
     document.getElementById("slide-context-menu").classList.remove("visible");
     setPanZoomEnabled(true);
   }
+
+  document.getElementById("menu-zoom-slide").addEventListener("click", () => {
+    const menu = document.getElementById("slide-context-menu");
+    const slideId = Number(menu.dataset.slideId);
+    let el = canvasNode.querySelector(`[data-slide-id="${slideId}"]`);
+    hideContextMenu();
+    if (!el) {
+      onSlideClick(slideId, contextSlideElement(menu, slideId));
+      el = canvasNode.querySelector(`[data-slide-id="${slideId}"]`);
+    }
+    if (!el) return;
+    const { x, y } = d3.select(el).datum();
+    const scale = Math.max(0.2, Math.min(4,
+      (viewport.clientWidth - 48) / SLIDE_WIDTH,
+      (viewport.clientHeight - 120) / SLIDE_HEIGHT));
+    const transform = d3.zoomIdentity
+      .translate(viewport.clientWidth / 2, viewport.clientHeight / 2)
+      .scale(scale)
+      .translate(-x - SLIDE_WIDTH / 2, -y - SLIDE_HEIGHT / 2);
+    d3.select(viewport).transition().duration(300).call(zoomBehavior.transform, transform);
+  });
+
+  document.getElementById("menu-add-selection").addEventListener("click", () => {
+    const slideId = Number(document.getElementById("slide-context-menu").dataset.slideId);
+    hideContextMenu();
+    if (!state.selection.has(slideId)) toggleSelection(slideId);
+  });
 
   document.getElementById("menu-show-in-deck").addEventListener("click", () => {
     const menu = document.getElementById("slide-context-menu");
@@ -636,6 +677,7 @@
 
   // -- search --------------------------------------------------------------
   async function runSearch(query) {
+    const revision = homeRevision;
     query = query.trim();
     state.searchQuery = query;
     if (!query) {
@@ -649,6 +691,7 @@
     const endpoint = mode === "semantic" ? "/api/search/semantic" : "/api/search";
     const res = await fetch(`${endpoint}?q=${encodeURIComponent(query)}`);
     const results = await res.json();
+    if (revision !== homeRevision) return;
     if (results && !Array.isArray(results) && results.error) {
       window.alert("Search failed: " + results.error);
       return;
@@ -683,6 +726,29 @@
   }
 
   // -- wiring ----------------------------------------------------------------
+  document.getElementById("home-btn").addEventListener("click", () => {
+    // Ignore pending search/similarity responses after returning home.
+    homeRevision += 1;
+    state.mode = "pool";
+    state.searchQuery = "";
+    state.searchOrder = [];
+    state.matchedSlideIds = new Set();
+    state.focusDeckId = null;
+    state.focusSlideId = null;
+    state.viewAnchor = { x: 0, y: 0 };
+    state.showHidden = false;
+    document.getElementById("search-box").value = "";
+    document.getElementById("search-mode").value = "keyword";
+    document.getElementById("toggle-hidden").checked = false;
+    hideContextMenu();
+    d3.select(viewport).interrupt().call(zoomBehavior.transform, d3.zoomIdentity);
+    render();
+  });
+
+  document.getElementById("search-btn").addEventListener("click", () => {
+    runSearch(document.getElementById("search-box").value);
+  });
+
   document.getElementById("search-box").addEventListener("keydown", (event) => {
     if (event.key === "Enter") runSearch(event.target.value);
   });

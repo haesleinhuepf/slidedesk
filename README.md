@@ -84,7 +84,7 @@ within each project session, without a filename prompt.
   shown as a thumbnail.
 - Click a slide to reveal the rest of the deck's slides to the right.
 - Search box: press Enter to find all slides containing the given text.
-- Double-click a slide to add/remove it from the export selection.
+- Right-click or hold a slide for actions: zoom to slide, add to selection, show in deck, or show similar.
 - "Export selection" button saves selected slides into a new `.pptx`.
 - Toggle to show/hide hidden slides.
 - Touch support: two-finger pinch to zoom, drag background to pan.

@@ -9,7 +9,13 @@
 </head>
 <body>
   <header id="toolbar">
+    <button id="home-btn" type="button" title="Home" aria-label="Home">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 10 12 3l9 7M5 9v12h5v-7h4v7h5V9" />
+      </svg>
+    </button>
     <input id="search-box" type="text" placeholder="Search slide text and press Enter…" />
+    <button id="search-btn" type="button">Search</button>
     <select id="search-mode" title="Search mode">
       <option value="keyword" selected>Keyword search</option>
       <option value="semantic">Semantic search (AI)</option>
@@ -39,11 +45,13 @@
       <button id="export-btn" disabled>Export selection</button>
       <button id="clear-selection-btn" disabled>Clear selection</button>
     </div>
-    <p id="selection-help">Double-click slides to select them. Drag to reorder.</p>
+    <p id="selection-help">Right-click or hold a slide to add it to selection. Drag to reorder.</p>
     <div id="selected-slides" aria-label="Selection order"></div>
   </aside>
 
   <div id="slide-context-menu" class="context-menu">
+    <button id="menu-zoom-slide">Zoom to slide</button>
+    <button id="menu-add-selection">Add to selection</button>
     <button id="menu-show-in-deck">Show in deck</button>
     <button id="menu-show-similar">Show similar</button>
     <button id="menu-remove" hidden>Remove</button>
