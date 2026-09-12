@@ -1,18 +1,21 @@
 # SlideDesk
 
-Index a folder full of `.pptx` files, automatically render `.pdf` / `.hidden.pdf`
-exports, extract slide text, and browse/search everything in a touch-friendly
-browser GUI.
+SlideDesk indexes a folder full of `.pptx` files (and sub-folders), 
+allowing you to browse everything in a touch-friendly browser GUI.
+It also has a similarity search, allowing you to rediscover slides 
+and build slide deck efficiently.
 
 ## Install
 
 ```bash
-pip install -e .
+pip install slidedesk
 ```
 
 After updating from slidedeck, run this command again to install the `slidedesk`
 command. Python imports now use `slidedesk`. Existing projects keep using
-`slidedeck.db` and `.slidedeck_cache` so saved data remains available.
+`slidedesk.db` and `.slidedesk_cache` so saved data remains available.
+
+Requires Microsoft PowerPoint installed and only works on Windows.
 
 Requires [Poppler](https://poppler.freedesktop.org/) (`pdftoppm`/`pdfinfo` on PATH,
 used by `pdf2image` to render slide images from PDFs) and, on Windows, a local
@@ -29,11 +32,12 @@ conda install poppler
 slidedesk serve /path/to/folder
 ```
 
-This creates (or opens) a `slidedeck.db` SQLite project file inside the folder,
+This creates (or opens) a `slidedesk.db` SQLite project file inside the folder,
 starts scanning it for `.pptx` files in the background, and opens a browser GUI at
-`http://127.0.0.1:5000`.
+`http://127.0.0.1:5000`. You can also make it use a different port using the 
+`--port 8989` option.
 
-To browse decks already stored in `slidedeck.db` without scanning folders for
+To browse decks already stored in `slidedesk.db` without scanning folders for
 changes or new decks:
 
 ```bash
@@ -44,51 +48,26 @@ This disables startup and recurring folder scans, including the scan API.
 The background embedding worker is also stopped in this mode. You can still
 explicitly refresh an individual indexed deck from the GUI.
 
-## Python API
+## How it works under the hood 
 
-Embeddings use the local Hugging Face model `intfloat/multilingual-e5-large-instruct`:
+SlideDesk downloads models from Hugging Face on first use, to run them locally
+Hence, it does not need an API key or an OpenAI-compatible server.
 
-```bash
-slidedesk serve /path/to/folder
-```
+Slide texts are embedded using the [intfloat/multilingual-e5-large-instruct](https://huggingface.co/intfloat/multilingual-e5-large-instruct) model. Thanks to this, you can search for terms 
+such as "image filtering" and it may find slides about "image processsing", too.
 
-The model downloads from Hugging Face on first use and does not need an API key or
-an OpenAI-compatible server.
+Slide images are embedded locally with [openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32). 
 
-Slide images are also embedded locally with `openai/clip-vit-base-patch32`.
-The background worker downloads CLIP on first use (internet access required),
-then reuses the downloaded model and stores vectors in `slidedeck.db`.
+The background worker stores vectors in `slidedesk.db`. 
 This includes hidden slides and slides without text once their PDF exports are
 available. Changed slides or PDF exports are embedded again automatically.
-Upgrade an existing installation with `pip install -e .` to install PyTorch and
-Transformers. Image embeddings use the same local model dependencies.
 
 “Show similar slides” presents one list: visual matches first, followed by
-additional text matches, without duplicates or separate labels. Either cache
+additional text matches, excluding duplicates. Either cache
 can supply results while the other is still being built or unavailable.
-In Python, `project.embed_images_pending()` processes a batch synchronously;
-`project.scan_in_background()` maintains both caches automatically.
 
-```python
-from slidedesk import SlideProject
-
-project = SlideProject("/path/to/folder")
-project.scan()  # synchronous scan; use scan_in_background() for async
-
-for deck in project.decks():
-    print(deck.pptx_path, len(project.slides(deck.id)))
-    for slide in project.slides(deck.id):
-        print(slide.index_in_deck, slide.hidden, slide.text)
-        image = project.slide_image(slide.id)  # PIL.Image.Image
-
-results = project.search("quarterly results")
-export_path = project.export_selection([s.id for s in results])
-```
-
-Exports are saved in a temporary directory outside the source deck folder and
-served from there for download. They are removed when `project.close()` is called.
-Downloads are automatically named `export_1.pptx`, `export_2.pptx`, and so on
-within each project session, without a filename prompt.
+Exports are saved in a temporary directory and served for download. 
+They are later removed automatically.
 
 ## GUI features
 
