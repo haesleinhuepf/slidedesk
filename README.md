@@ -46,17 +46,14 @@ explicitly refresh an individual indexed deck from the GUI.
 
 ## Python API
 
-Embeddings use KIARA by default (requires `KIARA_API_KEY`). To use local Ollama
-embeddings, start Ollama and download the model, then pass `--local`:
+Embeddings use the local Hugging Face model `intfloat/multilingual-e5-large-instruct`:
 
 ```bash
-ollama pull jeffh/intfloat-multilingual-e5-large-instruct:f32
-slidedesk serve /path/to/folder --local
+slidedesk serve /path/to/folder
 ```
 
-Local mode uses `http://localhost:11434/v1/` and does not need a KIARA API key.
-In Python, use `SlideProject("/path/to/folder", local=True)`.
-Switching providers recomputes cached slide embeddings for the selected model.
+The model downloads from Hugging Face on first use and does not need an API key or
+an OpenAI-compatible server.
 
 Slide images are also embedded locally with `openai/clip-vit-base-patch32`.
 The background worker downloads CLIP on first use (internet access required),
@@ -64,7 +61,7 @@ then reuses the downloaded model and stores vectors in `slidedeck.db`.
 This includes hidden slides and slides without text once their PDF exports are
 available. Changed slides or PDF exports are embedded again automatically.
 Upgrade an existing installation with `pip install -e .` to install PyTorch and
-Transformers. Image embeddings require no KIARA key or Ollama server.
+Transformers. Image embeddings use the same local model dependencies.
 
 “Show similar slides” presents one list: visual matches first, followed by
 additional text matches, without duplicates or separate labels. Either cache

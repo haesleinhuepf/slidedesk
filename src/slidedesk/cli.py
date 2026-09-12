@@ -20,7 +20,6 @@ def main() -> None:
 @click.option("--port", default=5000, show_default=True, type=int)
 @click.option("--no-browser", is_flag=True, help="Don't open a browser window.")
 @click.option("--no-scan", is_flag=True, help="Use indexed decks without scanning folders for changes or new decks.")
-@click.option("--local", is_flag=True, help="Compute embeddings using Ollama on localhost.")
 @click.option(
     "--scan-interval",
     default=5.0,
@@ -28,11 +27,11 @@ def main() -> None:
     type=float,
     help="Seconds between background folder scans.",
 )
-def serve(folder: str, host: str, port: int, no_browser: bool, scan_interval: float, local: bool = False, no_scan: bool = False) -> None:
+def serve(folder: str, host: str, port: int, no_browser: bool, scan_interval: float, no_scan: bool = False) -> None:
     """Open (or create) a project in FOLDER and start the GUI server."""
     from .server.app import create_app
 
-    project = SlideProject(folder, local=local)
+    project = SlideProject(folder)
     if not no_scan:
         project.scan_in_background(interval=scan_interval)
 

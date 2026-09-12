@@ -7,6 +7,8 @@ import logging
 import tempfile
 import threading
 import time
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import List, Optional
 
@@ -24,6 +26,33 @@ DB_FILENAME = "slidedesk.db"
 CACHE_DIRNAME = ".slidedesk_cache"
 
 
+class _EmbeddingTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: List[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag in {"br", "div", "li", "p"}:
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"div", "li", "p"}:
+            self.parts.append(" ")
+
+    def text(self) -> str:
+        return " ".join("".join(self.parts).split())
+
+
+def _text_for_embedding(text: str) -> str:
+    parser = _EmbeddingTextParser()
+    parser.feed(unescape(text))
+    parser.close()
+    return parser.text()
+
+
 
 class SlideProject:
     """Opens or creates a slidedesk project rooted at `folder`."""
@@ -31,10 +60,7 @@ class SlideProject:
     EMBEDDING_MODEL = embeddings.DEFAULT_MODEL
     IMAGE_EMBEDDING_MODEL = image_embeddings.MODEL
 
-    def __init__(self, folder: str | Path, local: bool = False):
-        self.local = local
-        if local:
-            self.EMBEDDING_MODEL = embeddings.LOCAL_MODEL
+    def __init__(self, folder: str | Path):
         self.folder = Path(folder).expanduser().resolve()
         self.folder.mkdir(parents=True, exist_ok=True)
         self.db_path = self.folder / DB_FILENAME
@@ -149,11 +175,10 @@ class SlideProject:
 
     # -- semantic search --------------------------------------------------
     def _embeddings_available(self) -> bool:
-        return embeddings.is_available(local=True) if self.local else embeddings.is_available()
+        return embeddings.is_available()
 
     def _embed(self, text: str) -> List[float]:
-        embed = embeddings.embed_local if self.local else embeddings.embed_kiara
-        return embed(text, embedding_model=self.EMBEDDING_MODEL)
+        return embeddings.embed_local(text, embedding_model=self.EMBEDDING_MODEL)
 
     def embedding_status(self) -> dict:
         """Report text and vision cache coverage without running inference."""
@@ -199,7 +224,7 @@ class SlideProject:
         count = 0
         for row in rows:
             try:
-                vector = self._embed(row["text"][:1024])
+                vector = self._embed(_text_for_embedding(row["text"])[:1024])
             except Exception as exc:
                 log.warning("Embedding failed for slide %s: %s", row["id"], exc)
                 continue

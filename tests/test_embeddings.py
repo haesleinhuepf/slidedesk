@@ -22,7 +22,7 @@ def test_embed_pending_strips_html(tmp_path, monkeypatch, source, expected):
         calls.append((text, embedding_model))
         return [1.0, 0.0]
 
-    monkeypatch.setattr(embeddings, "embed_kiara", embed)
+    monkeypatch.setattr(embeddings, "embed_local", embed)
     project = SlideProject(tmp_path)
     try:
         deck_id = project.conn.execute(

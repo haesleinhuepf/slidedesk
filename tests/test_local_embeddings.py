@@ -2,36 +2,39 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import torch
 from click.testing import CliRunner
 
 from slidedesk import SlideProject, embeddings
 from slidedesk.cli import main
 
 
-def test_local_endpoint_without_kiara_key(monkeypatch):
-    monkeypatch.delenv("KIARA_API_KEY", raising=False)
-    monkeypatch.setenv("KIARA_BASE_URL", "https://unused.invalid")
-    client = Mock()
-    client.embeddings.create.return_value = SimpleNamespace(
-        data=[SimpleNamespace(embedding=[1.0, 0.0])]
+def test_default_huggingface_model(monkeypatch):
+    tokenizer = Mock(return_value={
+        "input_ids": torch.tensor([[1, 2]]),
+        "attention_mask": torch.tensor([[1, 1]]),
+    })
+    model = Mock()
+    model.return_value = SimpleNamespace(
+        last_hidden_state=torch.tensor([[[3.0, 0.0], [0.0, 4.0]]])
     )
-    factory = Mock(return_value=client)
-    monkeypatch.setattr("openai.OpenAI", factory)
-    assert embeddings.is_available(local=True)
-    assert embeddings.embed_local("hello") == [1.0, 0.0]
-    factory.assert_called_with(base_url="http://localhost:11434/v1/", api_key="ollama")
-    client.embeddings.create.assert_called_once_with(
-        model="jeffh/intfloat-multilingual-e5-large-instruct:f32", input="hello"
-    )
-    assert not embeddings.is_available()
+    model_factory = Mock(from_pretrained=Mock(return_value=model))
+    tokenizer_factory = Mock(from_pretrained=Mock(return_value=tokenizer))
+    monkeypatch.setattr("transformers.AutoModel", model_factory)
+    monkeypatch.setattr("transformers.AutoTokenizer", tokenizer_factory)
+    embeddings._local_model_cache.clear()
+
+    assert embeddings.is_available()
+    assert embeddings.embed_local("hello") == pytest.approx([0.6, 0.8])
+    tokenizer_factory.from_pretrained.assert_called_once_with(embeddings.DEFAULT_MODEL)
+    model_factory.from_pretrained.assert_called_once_with(embeddings.DEFAULT_MODEL)
+    tokenizer.assert_called_once_with("hello", return_tensors="pt", truncation=True, max_length=512)
 
 
-def test_provider_switch_recomputes_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(embeddings, "is_available", lambda local=False: True)
-    remote = Mock(return_value=[1.0, 0.0])
-    local = Mock(return_value=[0.0, 1.0])
-    monkeypatch.setattr(embeddings, "embed_kiara", remote)
-    monkeypatch.setattr(embeddings, "embed_local", local)
+def test_default_embedding_recomputes_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(embeddings, "is_available", lambda: True)
+    embed = Mock(return_value=[0.0, 1.0])
+    monkeypatch.setattr(embeddings, "embed_local", embed)
     project = SlideProject(tmp_path)
     try:
         deck_id = project.conn.execute(
@@ -43,32 +46,21 @@ def test_provider_switch_recomputes_cache(tmp_path, monkeypatch):
         ).lastrowid
         project.conn.commit()
         assert project.embed_pending() == 1
-        remote.assert_called_once_with("hello", embedding_model=embeddings.DEFAULT_MODEL)
-    finally:
-        project.close()
-
-    project = SlideProject(tmp_path, local=True)
-    try:
-        assert project.embedding_status()["embedded"] == 0
-        assert project.search_semantic("query") == []
-        assert project.similar_slides(slide_id) == []
-        assert project.embed_pending() == 1
         assert project.embed_pending() == 0
         assert project.embedding_status()["embedded"] == 1
         assert [s.id for s in project.search_semantic("query")] == [slide_id]
-        assert all(c.kwargs["embedding_model"] == embeddings.LOCAL_MODEL for c in local.call_args_list)
-        assert remote.call_count == 1
+        assert embed.call_args_list[0].args == ("hello",)
+        assert embed.call_args_list[0].kwargs == {"embedding_model": embeddings.DEFAULT_MODEL}
     finally:
         project.close()
 
 
-@pytest.mark.parametrize("args, local", [([], False), (["--local"], True)])
-def test_cli_local_option(tmp_path, monkeypatch, args, local):
+def test_cli_uses_default_embeddings(tmp_path, monkeypatch):
     factory = Mock()
     app = Mock()
     monkeypatch.setattr("slidedesk.cli.SlideProject", factory)
     monkeypatch.setattr("slidedesk.server.app.create_app", Mock(return_value=app))
-    result = CliRunner().invoke(main, ["serve", str(tmp_path), "--no-browser", *args])
+    result = CliRunner().invoke(main, ["serve", str(tmp_path), "--no-browser"])
     assert result.exit_code == 0, result.output
-    factory.assert_called_once_with(str(tmp_path), local=local)
+    factory.assert_called_once_with(str(tmp_path))
     factory.return_value.close.assert_called_once()

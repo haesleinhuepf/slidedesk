@@ -16,7 +16,6 @@ dependencies = [
     "pdf2image>=1.17.0",
     "pillow>=10.0.0",
     "click>=8.1",
-    "openai>=1.0",
     "torch>=2.2",
     "transformers>=4.40,<6",
     "pywin32>=306; sys_platform == 'win32'",

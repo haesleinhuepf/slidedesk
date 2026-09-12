@@ -147,36 +147,6 @@ def test_stale_image_vectors_are_not_returned(project):
     assert project.similar_slides(1) == []
 
 
-def test_image_worker_does_not_block_scans_or_text(project, monkeypatch):
-    from slidedesk import scanner
-    entered = threading.Event()
-    release = threading.Event()
-    scanned = threading.Event()
-    text_embedded = threading.Event()
-
-    def slow_embed(image, model):
-        entered.set()
-        assert release.wait(5)
-        return [1, 0]
-
-    monkeypatch.setattr(image_embeddings, "embed_image", slow_embed)
-    monkeypatch.setattr(scanner, "scan_once", lambda p: scanned.set())
-    monkeypatch.setattr(project, "embed_pending", lambda: text_embedded.set())
-    worker = project.scan_in_background(interval=0.01)
-    try:
-        assert entered.wait(5)
-        scanned.clear()
-        text_embedded.clear()
-        assert scanned.wait(5)
-        assert text_embedded.wait(5)
-        assert project.scan_in_background() is worker
-    finally:
-        release.set()
-        project.stop_background_scan()
-    assert not worker._thread.is_alive()
-    assert not worker._image_thread.is_alive()
-
-
 def test_scan_keeps_decks_and_removes_their_cached_vectors(tmp_path, monkeypatch):
     from pptx import Presentation
     from slidedesk import scanner

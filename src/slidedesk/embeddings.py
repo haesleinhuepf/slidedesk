@@ -1,4 +1,4 @@
-"""Optional embedding-based semantic search via the KIARA OpenAI-compatible API.
+"""Optional embedding-based semantic search via a local Hugging Face model.
 
 Caches one embedding vector per slide (see `slide_embeddings` table in db.py) so
 that only new/changed slide text needs to be sent to the embedding endpoint;
@@ -8,57 +8,53 @@ from __future__ import annotations
 
 import array
 import math
-import os
+import threading
 from typing import List, Sequence
 
-DEFAULT_BASE_URL = "https://kiara.sc.uni-leipzig.de/api/"
-DEFAULT_MODEL = "vllm-multilingual-e5-large-instruct"
-LOCAL_BASE_URL = "http://localhost:11434/v1/"
-LOCAL_MODEL = "jeffh/intfloat-multilingual-e5-large-instruct:f32"
+DEFAULT_MODEL = "intfloat/multilingual-e5-large-instruct"
+
+_local_model_cache = {}
+_local_model_lock = threading.Lock()
 
 
 class EmbeddingError(RuntimeError):
     """Raised when an embedding could not be computed (missing deps/key, API error, ...)."""
 
 
-def _get_client(local: bool = False):
+def is_available() -> bool:
+    """Check whether the local embedding dependencies are installed."""
     try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise EmbeddingError("The 'openai' package is required for semantic search") from exc
-
-    if local:
-        return OpenAI(base_url=LOCAL_BASE_URL, api_key="ollama")
-
-    api_key = os.environ.get("KIARA_API_KEY")
-    if not api_key:
-        raise EmbeddingError("KIARA_API_KEY environment variable is not set")
-
-    base_url = os.environ.get("KIARA_BASE_URL", DEFAULT_BASE_URL)
-    return OpenAI(base_url=base_url, api_key=api_key)
-
-
-def is_available(local: bool = False) -> bool:
-    """Check client prerequisites; does not probe server or model availability."""
-    try:
-        _get_client(local=local)
-    except EmbeddingError:
+        import torch
+        import transformers
+    except ImportError:
         return False
     return True
 
 
-def embed_kiara(text: str, embedding_model: str = DEFAULT_MODEL, client=None) -> List[float]:
-    """Embed `text` using the KIARA OpenAI-compatible embeddings endpoint."""
-    client = client or _get_client()
-    response = client.embeddings.create(model=embedding_model, input=text)
-    return response.data[0].embedding
+def embed_local(text: str, embedding_model: str = DEFAULT_MODEL) -> List[float]:
+    """Embed `text` using a locally downloaded Hugging Face E5 model."""
+    try:
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+    except ImportError as exc:
+        raise EmbeddingError("The 'torch' and 'transformers' packages are required for embeddings") from exc
 
+    with _local_model_lock:
+        if embedding_model not in _local_model_cache:
+            tokenizer = AutoTokenizer.from_pretrained(embedding_model)
+            model = AutoModel.from_pretrained(embedding_model)
+            model.eval()
+            _local_model_cache[embedding_model] = (tokenizer, model)
+        tokenizer, model = _local_model_cache[embedding_model]
 
-def embed_local(text: str, embedding_model: str = LOCAL_MODEL, client=None) -> List[float]:
-    """Embed `text` using Ollama's local OpenAI-compatible endpoint."""
-    client = client or _get_client(local=True)
-    response = client.embeddings.create(model=embedding_model, input=text)
-    return response.data[0].embedding
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    with torch.inference_mode():
+        outputs = model(**inputs)
+        token_embeddings = outputs.last_hidden_state
+        attention_mask = inputs["attention_mask"].unsqueeze(-1).expand(token_embeddings.size()).float()
+        pooled = (token_embeddings * attention_mask).sum(dim=1) / attention_mask.sum(dim=1).clamp(min=1e-9)
+        normalized = torch.nn.functional.normalize(pooled, p=2, dim=1)
+    return normalized[0].cpu().tolist()
 
 
 def pack_vector(vector: Sequence[float]) -> bytes:
