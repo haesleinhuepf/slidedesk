@@ -63,6 +63,14 @@ def _index_slides(conn, deck_id: int, pptx_path: Path) -> None:
 def scan_once(
     project: "SlideProject", deck_id: Optional[int] = None, force: bool = False
 ) -> None:
+    # Serialize scans without blocking readers during conversion.
+    with project._scan_lock:
+        _scan_once(project, deck_id=deck_id, force=force)
+
+
+def _scan_once(
+    project: "SlideProject", deck_id: Optional[int] = None, force: bool = False
+) -> None:
     """Scan the project, optionally forcing a single deck to be reindexed."""
     conn = project.conn
     root = project.folder
@@ -70,9 +78,10 @@ def scan_once(
 
     target_path = None
     if deck_id is not None:
-        target = conn.execute(
-            "SELECT pptx_path FROM decks WHERE id = ?", (deck_id,)
-        ).fetchone()
+        with project._conn_lock:
+            target = conn.execute(
+                "SELECT pptx_path FROM decks WHERE id = ?", (deck_id,)
+            ).fetchone()
         if target is None:
             return
         target_path = target["pptx_path"]
@@ -88,9 +97,10 @@ def scan_once(
         except FileNotFoundError:
             continue
 
-        row = conn.execute(
-            "SELECT * FROM decks WHERE pptx_path = ?", (rel_pptx,)
-        ).fetchone()
+        with project._conn_lock:
+            row = conn.execute(
+                "SELECT * FROM decks WHERE pptx_path = ?", (rel_pptx,)
+            ).fetchone()
 
         pdf_rel = str(Path(rel_pptx).with_suffix(".pdf"))
         hidden_pdf_rel = rel_pptx[: -len(".pptx")] + ".hidden.pdf"
@@ -120,41 +130,43 @@ def scan_once(
         )
         now = time.time()
 
-        if row is None:
-            cur = conn.execute(
-                "INSERT INTO decks (pptx_path, pptx_mtime, pdf_path, pdf_mtime, "
-                "hidden_pdf_path, hidden_pdf_mtime, last_scanned) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (rel_pptx, mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime, now),
-            )
-            deck_id = cur.lastrowid
-        else:
-            deck_id = row["id"]
-            conn.execute(
-                "UPDATE decks SET pptx_mtime=?, pdf_path=?, pdf_mtime=?, "
-                "hidden_pdf_path=?, hidden_pdf_mtime=?, last_scanned=? WHERE id=?",
-                (mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime, now, deck_id),
-            )
+        with project._conn_lock, conn:
+            if row is None:
+                cur = conn.execute(
+                    "INSERT INTO decks (pptx_path, pptx_mtime, pdf_path, pdf_mtime, "
+                    "hidden_pdf_path, hidden_pdf_mtime, last_scanned) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (rel_pptx, mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime, now),
+                )
+                deck_id = cur.lastrowid
+            else:
+                deck_id = row["id"]
+                conn.execute(
+                    "UPDATE decks SET pptx_mtime=?, pdf_path=?, pdf_mtime=?, "
+                    "hidden_pdf_path=?, hidden_pdf_mtime=?, last_scanned=? WHERE id=?",
+                    (mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime, now, deck_id),
+                )
 
-        if needs_reindex:
-            _index_slides(conn, deck_id, pptx_path)
-        conn.commit()
-
-    if target_path is not None:
-        if target_path not in seen_paths:
-            # The deck's source .pptx is gone; drop the stale record.
-            conn.execute("DELETE FROM decks WHERE id = ?", (deck_id,))
+            if needs_reindex:
+                _index_slides(conn, deck_id, pptx_path)
             conn.commit()
-        project._status["current_file"] = None
-        return
 
-    # Drop decks whose source .pptx has disappeared.
-    existing = conn.execute("SELECT id, pptx_path FROM decks").fetchall()
-    for row in existing:
-        if row["pptx_path"] not in seen_paths:
-            conn.execute("DELETE FROM decks WHERE id = ?", (row["id"],))
-    conn.commit()
-    project._status["current_file"] = None
+    with project._conn_lock, conn:
+        if target_path is not None:
+            if target_path not in seen_paths:
+                # The deck's source .pptx is gone; drop the stale record.
+                conn.execute("DELETE FROM decks WHERE id = ?", (deck_id,))
+                conn.commit()
+            project._status["current_file"] = None
+            return
+
+        # Drop decks whose source .pptx has disappeared.
+        existing = conn.execute("SELECT id, pptx_path FROM decks").fetchall()
+        for row in existing:
+            if row["pptx_path"] not in seen_paths:
+                conn.execute("DELETE FROM decks WHERE id = ?", (row["id"],))
+        conn.commit()
+        project._status["current_file"] = None
 
 
 class BackgroundScanner:
@@ -202,8 +214,7 @@ class BackgroundScanner:
                 status["last_run_started"] = time.time()
                 status["error"] = None
                 try:
-                    with self.project._conn_lock:
-                        scan_once(self.project)
+                    self.project.scan()
                     self.project.embed_pending()
                 except Exception as exc:  # keep the loop alive across transient errors
                     log.exception("Scan failed")

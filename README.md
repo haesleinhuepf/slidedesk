@@ -29,6 +29,17 @@ This creates (or opens) a `slidedeck.db` SQLite project file inside the folder,
 starts scanning it for `.pptx` files in the background, and opens a browser GUI at
 `http://127.0.0.1:5000`.
 
+To browse decks already stored in `slidedeck.db` without scanning folders for
+changes or new decks:
+
+```bash
+slidedeck serve /path/to/folder --no-scan
+```
+
+This disables startup and recurring folder scans, including the scan API.
+The background embedding worker is also stopped in this mode. You can still
+explicitly refresh an individual indexed deck from the GUI.
+
 ## Python API
 
 Embeddings use KIARA by default (requires `KIARA_API_KEY`). To use local Ollama

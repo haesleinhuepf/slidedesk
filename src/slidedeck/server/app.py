@@ -10,7 +10,7 @@ from .. import embeddings
 from ..project import SlideProject
 
 
-def create_app(project: SlideProject) -> Flask:
+def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
     app = Flask(
         __name__,
         static_folder=str(Path(__file__).parent / "static"),
@@ -60,7 +60,7 @@ def create_app(project: SlideProject) -> Flask:
             decks.append(payload)
         return jsonify(decks)
 
-    @app.get("/api/decks/<int:deck_id>/slides")
+    @app.get("/api/decks/<int(signed=True):deck_id>/slides")
     def api_deck_slides(deck_id):
         if not deck_file_exists(project.deck(deck_id)):
             return jsonify([])
@@ -120,7 +120,7 @@ def create_app(project: SlideProject) -> Flask:
         results.sort(key=lambda d: min(rank[s["id"]] for s in d["matched_slides"]))
         return jsonify(results)
 
-    @app.get("/api/slides/<int:slide_id>/similar")
+    @app.get("/api/slides/<int(signed=True):slide_id>/similar")
     def api_slide_similar(slide_id):
         source = project.slide(slide_id)
         if source is None or not deck_file_exists(project.deck(source.deck_id)):
@@ -139,7 +139,7 @@ def create_app(project: SlideProject) -> Flask:
     def api_embeddings_status():
         return jsonify(project.embedding_status())
 
-    @app.get("/api/slides/<int:slide_id>/image")
+    @app.get("/api/slides/<int(signed=True):slide_id>/image")
     def api_slide_image(slide_id):
         dpi = request.args.get("dpi", default=110, type=int)
         try:
@@ -157,10 +157,12 @@ def create_app(project: SlideProject) -> Flask:
 
     @app.post("/api/scan")
     def api_scan_trigger():
+        if not scan_enabled:
+            return jsonify({"error": "Folder scanning is disabled (--no-scan)."}), 403
         project.scan_in_background()
         return jsonify({"ok": True})
 
-    @app.post("/api/decks/<int:deck_id>/refresh")
+    @app.post("/api/decks/<int(signed=True):deck_id>/refresh")
     def api_deck_refresh(deck_id):
         if project.deck(deck_id) is None:
             return jsonify({"error": "deck not found"}), 404

@@ -42,6 +42,7 @@ class SlideProject:
         self.cache_dir.mkdir(exist_ok=True)
         self.conn = db.connect(self.db_path)
         self._conn_lock = threading.RLock()
+        self._scan_lock = threading.Lock()
         self._status = {
             "running": False,
             "current_file": None,
@@ -59,13 +60,11 @@ class SlideProject:
     # -- indexing -----------------------------------------------------
     def scan(self) -> None:
         """Synchronously scan the folder once, updating the database."""
-        with self._conn_lock:
-            scan_once(self)
+        scan_once(self)
     
     def refresh_deck(self, deck_id: int) -> None:
         """Force a fresh scan of one deck and its derived database contents."""
-        with self._conn_lock:
-            scan_once(self, deck_id=deck_id, force=True)
+        scan_once(self, deck_id=deck_id, force=True)
 
     def scan_in_background(self, interval: float = 5.0) -> BackgroundScanner:
         """Start (or return the existing) background scan loop."""

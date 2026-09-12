@@ -69,8 +69,10 @@
     const decks = await res.json();
     state.decks = decks;
     indexData();
-    updateSelectionUi();
-    if (state.mode === "pool" || state.mode === "search") render();
+    if (state.mode === "pool") {
+      updateSelectionUi();
+      render();
+    }
   }
 
   function indexData() {
@@ -100,7 +102,12 @@
       const el = document.getElementById("scan-status");
       el.title = "";
       if (status.running) {
-        showStatusProgress(el, "Scanning…", null, "Scanning… " + (status.current_file || ""));
+        const currentFile = status.current_file || "";
+        const folder = currentFile.includes("/")
+          ? currentFile.slice(0, currentFile.lastIndexOf("/"))
+          : ".";
+        showStatusProgress(el, `Scanning… ${folder}`, null,
+          "Scanning… " + (currentFile || folder));
       } else if (status.error) {
         el.textContent = "Scan error: " + status.error;
       } else if (status.last_run_finished) {
