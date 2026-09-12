@@ -3,7 +3,7 @@
  *   - "pool":   all slides, most recently changed deck first (initial view).
  *   - "search": only slides matching the current search query.
  *   - "deck":   the full deck of a clicked slide, laid out left-to-right,
- *               with the clicked slide staying exactly where it was.
+ *               keeping the clicked slide in sight while fitting the row.
  *   - "similar": embedding-based similar slides, laid out in a deck-style
  *               horizontal wrap, like the slide-deck view.
  */
@@ -17,6 +17,7 @@
   const CELL_H = SLIDE_HEIGHT + 16 + GAP; // Include the label below each slide.
   const POOL_COLUMNS = 5;
   const DECK_ROW_LENGTH = POOL_COLUMNS; // wrap the full-deck view every this many slides
+  const MODE_TRANSITION_MS = 500;
   const LONG_PRESS_MS = 1000;
   const MOVE_CANCEL_PX = 6;
   const KEY_PAN_PX = 40;
@@ -33,7 +34,6 @@
     matchedSlideIds: new Set(),
     focusDeckId: null,
     focusSlideId: null,
-    viewAnchor: { x: 0, y: 0 }, // canvas-space position the focus slide keeps
     selection: new Set(),
     showHidden: false,
     refreshingDeckIds: new Set(),
@@ -48,7 +48,8 @@
   // -- zoom / pan (mouse drag, touch pinch/pan, arrow keys / WASD) ---------
   const zoomBehavior = d3
     .zoom()
-    .scaleExtent([0.2, 4])
+    .scaleExtent([0.01, 32])
+    .interpolate(d3.interpolate)
     .on("start", () => viewport.classList.add("grabbing"))
     .on("end", () => viewport.classList.remove("grabbing"))
     .on("zoom", (event) => {
@@ -97,6 +98,51 @@
       x: (clientX - rect.left - t.x) / t.k,
       y: (clientY - rect.top - t.y) / t.k,
     };
+  }
+
+  let renderedItems = [];
+
+  function fitView(clickedPosition = null) {
+    const padding = 24;
+    const rect = viewport.getBoundingClientRect();
+    const breadcrumb = document.getElementById("view-breadcrumb").getBoundingClientRect();
+    const top = Math.max(0, breadcrumb.bottom - rect.top) + padding;
+    const width = Math.max(1, viewport.clientWidth - padding * 2);
+    const height = Math.max(1, viewport.clientHeight - top - padding);
+    const items = renderedItems;
+    const contentWidth = items.reduce((right, item) => Math.max(right, item.x + SLIDE_WIDTH), SLIDE_WIDTH);
+    // Fit the actual occupied columns, including decks/results shorter than a row.
+    // Height only limits zoom when a single complete slide would not fit.
+    const k = Math.min(width / contentWidth, height / (CELL_H - GAP));
+    const focus = items.find((item) => item.slide.id === state.focusSlideId) || items[0];
+    const hasFocus = state.mode === "deck" || state.mode === "similar";
+    const focusY = hasFocus && focus ? focus.y : 0;
+    const desiredY = clickedPosition ? clickedPosition.y : top;
+    const screenY = Math.max(top, Math.min(desiredY, top + height - (CELL_H - GAP) * k));
+    // Canonical grids start at y=0. Keep their first row at the top whenever
+    // preserving the clicked position would leave empty canvas above it.
+    const y = Math.min(top, (hasFocus ? screenY : top) - focusY * k);
+    const target = d3.zoomIdentity.translate(padding, y).scale(k);
+    const selection = d3.select(viewport).interrupt();
+
+    // Layout has canonical coordinates. Rebase the camera to keep the clicked
+    // slide at its old screen position before animating into the fitted view.
+    if (clickedPosition && focus && hasFocus) {
+      const current = d3.zoomTransform(viewport);
+      selection.call(zoomBehavior.transform, d3.zoomIdentity
+        .translate(clickedPosition.x - focus.x * current.k, clickedPosition.y - focus.y * current.k)
+        .scale(current.k));
+    }
+    canvas.selectAll(".slide-thumb").interrupt()
+      .filter((item) => items.includes(item))
+      .style("left", (item) => `${item.x}px`)
+      .style("top", (item) => `${item.y}px`)
+      .style("opacity", 1);
+    canvas.selectAll(".slide-thumb").filter((item) => !items.includes(item)).remove();
+    // Let D3 own its transition: calling transform on a plain selection from
+    // inside a tween interrupts that very transition on the first frame.
+    selection.transition().duration(MODE_TRANSITION_MS)
+      .call(zoomBehavior.transform, target);
   }
 
   // -- data loading -------------------------------------------------------
@@ -215,17 +261,11 @@
       .filter((s) => state.showHidden || !s.hidden)
       .slice()
       .sort((a, b) => a.index_in_deck - b.index_in_deck);
-    const rawFocusIdx = slides.findIndex((s) => s.id === state.focusSlideId);
-    const focusIdx = rawFocusIdx < 0 ? 0 : rawFocusIdx;
-    const focusRow = Math.floor(focusIdx / DECK_ROW_LENGTH);
-    const focusCol = focusIdx % DECK_ROW_LENGTH;
-    const anchor = state.viewAnchor;
     return slides.map((slide, i) => ({
       slide,
       deck,
-      x: anchor.x + ((i % DECK_ROW_LENGTH) - focusCol) * CELL_W,
-      y: anchor.y + (Math.floor(i / DECK_ROW_LENGTH) - focusRow) * CELL_H,
-      enterFrom: rawFocusIdx < 0 ? null : { x: anchor.x, y: anchor.y },
+      x: (i % DECK_ROW_LENGTH) * CELL_W,
+      y: Math.floor(i / DECK_ROW_LENGTH) * CELL_H,
     }));
   }
 
@@ -245,6 +285,7 @@
   }
 
   function renderStatic(items) {
+    renderedItems = items;
     if (state.simulation) {
       state.simulation.stop();
       state.simulation = null;
@@ -288,7 +329,7 @@
       if (source) {
         const similar = (state.similarSlideIds || [])
           .map((id) => state.slidesById.get(id)?.slide).filter(Boolean);
-        startSimilarSimulation(source.slide, similar, state.viewAnchor);
+        startSimilarSimulation(source.slide, similar);
         return;
       }
     }
@@ -312,7 +353,6 @@
       matchedSlideIds: new Set(state.matchedSlideIds),
       focusDeckId: state.focusDeckId,
       focusSlideId: state.focusSlideId,
-      viewAnchor: { ...state.viewAnchor },
       similarSlideIds: [...(state.similarSlideIds || [])],
       showHidden: state.showHidden,
       transform: d3.zoomTransform(viewport),
@@ -367,8 +407,8 @@
     document.getElementById("search-mode").value = state.searchMode;
     document.getElementById("toggle-hidden").checked = state.showHidden;
     hideContextMenu();
-    d3.select(viewport).call(zoomBehavior.transform, transform);
     render();
+    fitView();
     updateBreadcrumb();
   }
 
@@ -395,16 +435,16 @@
     }
 
     saveLocation();
-    const anchor = navigationAnchor(el);
+    const clickedPosition = clickedSlidePosition(el);
     state.mode = "similar";
     state.similarSlideIds = similar.map((slide) => slide.id);
     state.focusSlideId = slideId;
-    state.viewAnchor = anchor;
     recordLocation();
-    startSimilarSimulation(entry.slide, similar, anchor);
+    startSimilarSimulation(entry.slide, similar);
+    fitView(clickedPosition);
   }
 
-  function startSimilarSimulation(sourceSlide, similarSlides, anchor) {
+  function startSimilarSimulation(sourceSlide, similarSlides) {
     if (state.simulation) state.simulation.stop();
 
     const items = [sourceSlide, ...similarSlides]
@@ -412,9 +452,8 @@
       .map((slide, i) => ({
       slide,
       deck: state.deckById.get(slide.deck_id) || { id: slide.deck_id, name: "(deck)" },
-      x: anchor.x + (i % DECK_ROW_LENGTH) * CELL_W,
-      y: anchor.y + Math.floor(i / DECK_ROW_LENGTH) * CELL_H,
-      enterFrom: { x: anchor.x, y: anchor.y },
+      x: (i % DECK_ROW_LENGTH) * CELL_W,
+      y: Math.floor(i / DECK_ROW_LENGTH) * CELL_H,
     }));
 
     renderStatic(items);
@@ -489,13 +528,13 @@
     const entry = state.slidesById.get(slideId);
     if (!entry) return;
     saveLocation();
-    const anchor = navigationAnchor(el);
-    state.viewAnchor = anchor;
+    const clickedPosition = clickedSlidePosition(el);
     state.focusDeckId = entry.deck.id;
     state.focusSlideId = slideId;
     state.mode = "deck";
     recordLocation();
     render();
+    fitView(clickedPosition);
   }
 
   function toggleSelection(slideId) {
@@ -519,14 +558,11 @@
     renderSelectionBar();
   }
 
-  function navigationAnchor(el) {
-    if (el && canvasNode.contains(el)) {
-      const rect = el.getBoundingClientRect();
-      return screenToCanvas(rect.left, rect.top);
-    }
-    // Sidebar navigation starts inside the visible canvas, independent of pan/zoom.
-    d3.select(viewport).call(zoomBehavior.transform, d3.zoomIdentity.translate(24, 60));
-    return { x: 0, y: 0 };
+  function clickedSlidePosition(el) {
+    if (!el || !canvasNode.contains(el)) return null;
+    const slideRect = el.getBoundingClientRect();
+    const viewportRect = viewport.getBoundingClientRect();
+    return { x: slideRect.left - viewportRect.left, y: slideRect.top - viewportRect.top };
   }
 
   const selectionList = document.getElementById("selected-slides");
@@ -829,6 +865,7 @@
       state.searchOrder = [];
       recordLocation();
       render();
+      fitView();
       return;
     }
     const mode = document.getElementById("search-mode").value;
@@ -856,6 +893,7 @@
     state.mode = "search";
     recordLocation();
     render();
+    fitView();
   }
 
   // -- export --------------------------------------------------------------
@@ -885,15 +923,14 @@
     state.matchedSlideIds = new Set();
     state.focusDeckId = null;
     state.focusSlideId = null;
-    state.viewAnchor = { x: 0, y: 0 };
     state.showHidden = false;
     document.getElementById("search-box").value = "";
     document.getElementById("search-mode").value = "keyword";
     document.getElementById("toggle-hidden").checked = false;
     hideContextMenu();
-    d3.select(viewport).interrupt().call(zoomBehavior.transform, d3.zoomIdentity);
     recordLocation();
     render();
+    fitView();
   });
 
   document.getElementById("search-btn").addEventListener("click", () => {
@@ -923,7 +960,7 @@
   });
 
   recordLocation();
-  loadDecks();
+  loadDecks().then(() => fitView());
   pollScanStatus();
   pollEmbeddingStatus();
   setInterval(loadDecks, 5000);
