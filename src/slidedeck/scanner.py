@@ -40,6 +40,20 @@ def _rel(root: Path, path: Path) -> str:
 
 def _index_slides(conn, deck_id: int, pptx_path: Path) -> None:
     prs = Presentation(str(pptx_path))
+    overrides = {
+        row["source_slide_id"]: row["user_hidden"]
+        for row in conn.execute(
+            "SELECT source_slide_id, user_hidden FROM slides WHERE deck_id = ?",
+            (deck_id,),
+        ) if row["source_slide_id"] is not None
+    }
+    legacy_overrides = {
+        row["index_in_deck"]: row["user_hidden"]
+        for row in conn.execute(
+            "SELECT index_in_deck, user_hidden FROM slides "
+            "WHERE deck_id = ? AND source_slide_id IS NULL", (deck_id,),
+        )
+    }
     conn.execute("DELETE FROM slides WHERE deck_id = ?", (deck_id,))
     visible_counter = 0
     rows = []
@@ -52,10 +66,13 @@ def _index_slides(conn, deck_id: int, pptx_path: Path) -> None:
         else:
             visible_counter += 1
             visible_page = visible_counter
-        rows.append((deck_id, idx, visible_page, int(hidden), text))
+        user_hidden = overrides.get(slide.slide_id, legacy_overrides.get(idx))
+        rows.append((deck_id, idx, visible_page,
+                     int(hidden) if user_hidden is None else user_hidden,
+                     text, user_hidden, slide.slide_id))
     conn.executemany(
-        "INSERT INTO slides (deck_id, index_in_deck, visible_pdf_page, hidden, text) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO slides (deck_id, index_in_deck, visible_pdf_page, hidden, text, "
+        "user_hidden, source_slide_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
 

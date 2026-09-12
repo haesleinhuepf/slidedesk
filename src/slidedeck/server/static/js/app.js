@@ -211,7 +211,7 @@
     const deck = state.deckById.get(state.focusDeckId);
     if (!deck) return [];
     const slides = deck.slides
-      .filter((s) => state.showHidden || !s.hidden || s.id === state.focusSlideId)
+      .filter((s) => state.showHidden || !s.hidden)
       .slice()
       .sort((a, b) => a.index_in_deck - b.index_in_deck);
     const rawFocusIdx = slides.findIndex((s) => s.id === state.focusSlideId);
@@ -282,6 +282,15 @@
   }
 
   function render() {
+    if (state.mode === "similar") {
+      const source = state.slidesById.get(state.focusSlideId);
+      if (source) {
+        const similar = (state.similarSlideIds || [])
+          .map((id) => state.slidesById.get(id)?.slide).filter(Boolean);
+        startSimilarSimulation(source.slide, similar, state.viewAnchor);
+        return;
+      }
+    }
     let items;
     if (state.mode === "deck") items = deckItems();
     else if (state.mode === "search") items = searchItems();
@@ -333,6 +342,7 @@
     }
 
     state.mode = "similar";
+    state.similarSlideIds = similar.map((slide) => slide.id);
     state.focusSlideId = slideId;
     state.viewAnchor = anchor;
     startSimilarSimulation(entry.slide, similar, anchor);
@@ -341,7 +351,9 @@
   function startSimilarSimulation(sourceSlide, similarSlides, anchor) {
     if (state.simulation) state.simulation.stop();
 
-    const items = [sourceSlide, ...similarSlides].map((slide, i) => ({
+    const items = [sourceSlide, ...similarSlides]
+      .filter((slide) => state.showHidden || !slide.hidden)
+      .map((slide, i) => ({
       slide,
       deck: state.deckById.get(slide.deck_id) || { id: slide.deck_id, name: "(deck)" },
       x: anchor.x + (i % DECK_ROW_LENGTH) * CELL_W,
@@ -609,6 +621,9 @@
     const menu = document.getElementById("slide-context-menu");
     menu.dataset.slideId = el.getAttribute("data-slide-id");
     menu.dataset.source = selectionList.contains(el) ? "selection" : "canvas";
+    const { slide, deck } = state.slidesById.get(Number(menu.dataset.slideId));
+    document.getElementById("menu-toggle-slide-hidden").textContent = slide.hidden ? "Unhide slide" : "Hide slide";
+    document.getElementById("menu-toggle-deck-hidden").textContent = deck.slides.every((s) => s.hidden) ? "Unhide slide deck" : "Hide slide deck";
     document.getElementById("menu-remove").hidden = menu.dataset.source !== "selection";
     document.getElementById("menu-add-selection").disabled = state.selection.has(Number(menu.dataset.slideId));
     menu.style.left = `${clientX}px`;
@@ -625,6 +640,33 @@
     document.getElementById("slide-context-menu").classList.remove("visible");
     setPanZoomEnabled(true);
   }
+
+  async function toggleHidden(entireDeck) {
+    const menu = document.getElementById("slide-context-menu");
+    const entry = state.slidesById.get(Number(menu.dataset.slideId));
+    hideContextMenu();
+    if (!entry) return;
+    const { slide, deck } = entry;
+    const hidden = entireDeck ? !deck.slides.every((s) => s.hidden) : !slide.hidden;
+    const url = entireDeck ? `/api/decks/${deck.id}/slides/hidden` : `/api/slides/${slide.id}/hidden`;
+    try {
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not change visibility");
+      await loadDecks();
+      updateSelectionUi();
+      render();
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
+  document.getElementById("menu-toggle-slide-hidden").addEventListener("click", () => toggleHidden(false));
+  document.getElementById("menu-toggle-deck-hidden").addEventListener("click", () => toggleHidden(true));
 
   document.getElementById("menu-zoom-slide").addEventListener("click", () => {
     const menu = document.getElementById("slide-context-menu");

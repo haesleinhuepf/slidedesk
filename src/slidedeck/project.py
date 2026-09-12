@@ -116,6 +116,26 @@ class SlideProject:
             row = self.conn.execute("SELECT * FROM slides WHERE id = ?", (slide_id,)).fetchone()
         return Slide.from_row(row) if row else None
 
+    def set_slide_hidden(self, slide_id: int, hidden: bool) -> None:
+        """Persist a user's visibility choice without modifying the source PPTX."""
+        with self._conn_lock, self.conn:
+            if self.slide(slide_id) is None:
+                raise KeyError(f"No such slide: {slide_id}")
+            self.conn.execute(
+                "UPDATE slides SET hidden = ?, user_hidden = ? WHERE id = ?",
+                (int(hidden), int(hidden), slide_id),
+            )
+
+    def set_deck_slides_hidden(self, deck_id: int, hidden: bool) -> None:
+        """Set visibility individually for every current slide in a deck."""
+        with self._conn_lock, self.conn:
+            if self.deck(deck_id) is None:
+                raise KeyError(f"No such deck: {deck_id}")
+            self.conn.execute(
+                "UPDATE slides SET hidden = ?, user_hidden = ? WHERE deck_id = ?",
+                (int(hidden), int(hidden), deck_id),
+            )
+
     def search(self, query: str) -> List[Slide]:
         """Full-text search over slide text, newest decks first."""
         with self._conn_lock:
@@ -206,7 +226,7 @@ class SlideProject:
         deck = self.deck(slide.deck_id)
         if deck is None or not (self.folder / deck.pptx_path).is_file():
             return None
-        pdf = deck.hidden_pdf_path if slide.hidden else deck.pdf_path
+        pdf = deck.hidden_pdf_path if slide.visible_pdf_page is None else deck.pdf_path
         if not pdf:
             return None
         try:
@@ -215,7 +235,7 @@ class SlideProject:
         except OSError:
             return None
         return repr((pdf, stat.st_mtime_ns, stat.st_size, pptx_stat.st_mtime_ns,
-                     slide.index_in_deck, slide.visible_pdf_page, slide.hidden))
+                     slide.index_in_deck, slide.visible_pdf_page))
 
     def embed_images_pending(self, limit: int = 20, stop_event=None) -> int:
         """Cache all renderable slides, including hidden slides and empty text.
@@ -326,7 +346,7 @@ class SlideProject:
         if deck is None:
             raise KeyError(f"No such deck: {slide.deck_id}")
 
-        if slide.hidden:
+        if slide.visible_pdf_page is None:
             if not deck.hidden_pdf_path:
                 raise FileNotFoundError("hidden.pdf export not available yet")
             pdf_path = self.folder / deck.hidden_pdf_path

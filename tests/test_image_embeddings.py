@@ -20,7 +20,7 @@ def project(tmp_path, monkeypatch):
     for i in range(5):
         project.conn.execute(
             "INSERT INTO slides (deck_id, index_in_deck, text, hidden, visible_pdf_page) "
-            "VALUES (?, ?, ?, ?, ?)", (deck, i, "" if i == 0 else "text", i == 4, i + 1),
+            "VALUES (?, ?, ?, ?, ?)", (deck, i, "" if i == 0 else "text", i == 4, None if i == 4 else i + 1),
         )
     project.conn.commit()
     monkeypatch.setattr(project, "slide_image", lambda sid: Image.new("RGB", (32, 32)))

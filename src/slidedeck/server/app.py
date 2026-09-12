@@ -68,6 +68,28 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
         slides = project.slides(deck_id, include_hidden=include_hidden)
         return jsonify([slide_to_json(s) for s in slides])
 
+    @app.patch("/api/slides/<int(signed=True):slide_id>/hidden")
+    def api_slide_hidden(slide_id):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or type(body.get("hidden")) is not bool:
+            return jsonify({"error": "hidden must be a boolean"}), 400
+        try:
+            project.set_slide_hidden(slide_id, body["hidden"])
+        except KeyError:
+            return jsonify({"error": "slide not found"}), 404
+        return jsonify({"ok": True})
+
+    @app.patch("/api/decks/<int(signed=True):deck_id>/slides/hidden")
+    def api_deck_slides_hidden(deck_id):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or type(body.get("hidden")) is not bool:
+            return jsonify({"error": "hidden must be a boolean"}), 400
+        try:
+            project.set_deck_slides_hidden(deck_id, body["hidden"])
+        except KeyError:
+            return jsonify({"error": "deck not found"}), 404
+        return jsonify({"ok": True})
+
     @app.get("/api/search")
     def api_search():
         query = request.args.get("q", "").strip()
