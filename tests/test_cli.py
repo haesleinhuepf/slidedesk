@@ -29,7 +29,7 @@ def test_no_scan_serves_existing_database(tmp_path, monkeypatch):
         assert client.post("/api/scan").status_code == 403
 
     monkeypatch.setattr("flask.Flask.run", run)
-    result = CliRunner().invoke(main, ["serve", str(tmp_path), "--no-browser", "--no-scan"])
+    result = CliRunner().invoke(main, [str(tmp_path), "--no-browser", "--no-scan"])
     assert result.exit_code == 0, result.exception
     scanner.assert_not_called()
 
@@ -39,7 +39,7 @@ def test_serve_scans_by_default(tmp_path, monkeypatch):
     monkeypatch.setattr(SlideProject, "scan_in_background", scanner)
     monkeypatch.setattr("flask.Flask.run", Mock())
     result = CliRunner().invoke(
-        main, ["serve", str(tmp_path), "--no-browser", "--scan-interval", "12"]
+        main, [str(tmp_path), "--no-browser", "--scan-interval", "12"]
     )
     assert result.exit_code == 0, result.exception
     scanner.assert_called_once_with(interval=12.0)

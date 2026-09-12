@@ -1,4 +1,4 @@
-"""Command-line entry point: `slidedesk serve <folder>`."""
+"""Command-line entry point: `slidedesk <folder>`."""
 from __future__ import annotations
 
 import threading
@@ -9,12 +9,7 @@ import click
 from .project import SlideProject
 
 
-@click.group()
-def main() -> None:
-    """slidedesk: index and browse .pptx slide decks in a folder."""
-
-
-@main.command()
+@click.command()
 @click.argument("folder", type=click.Path(file_okay=False, path_type=str))
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=5000, show_default=True, type=int)
@@ -27,7 +22,7 @@ def main() -> None:
     type=float,
     help="Seconds between background folder scans.",
 )
-def serve(folder: str, host: str, port: int, no_browser: bool, scan_interval: float, no_scan: bool = False) -> None:
+def main(folder: str, host: str, port: int, no_browser: bool, scan_interval: float, no_scan: bool = False) -> None:
     """Open (or create) a project in FOLDER and start the GUI server."""
     from .server.app import create_app
 

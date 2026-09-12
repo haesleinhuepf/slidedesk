@@ -60,7 +60,7 @@ def test_cli_uses_default_embeddings(tmp_path, monkeypatch):
     app = Mock()
     monkeypatch.setattr("slidedesk.cli.SlideProject", factory)
     monkeypatch.setattr("slidedesk.server.app.create_app", Mock(return_value=app))
-    result = CliRunner().invoke(main, ["serve", str(tmp_path), "--no-browser"])
+    result = CliRunner().invoke(main, [str(tmp_path), "--no-browser"])
     assert result.exit_code == 0, result.output
     factory.assert_called_once_with(str(tmp_path))
     factory.return_value.close.assert_called_once()

@@ -29,7 +29,7 @@ conda install poppler
 ## Usage
 
 ```bash
-slidedesk serve /path/to/folder
+slidedesk /path/to/folder
 ```
 
 This creates (or opens) a `slidedesk.db` SQLite project file inside the folder,
@@ -41,7 +41,7 @@ To browse decks already stored in `slidedesk.db` without scanning folders for
 changes or new decks:
 
 ```bash
-slidedesk serve /path/to/folder --no-scan
+slidedesk /path/to/folder --no-scan
 ```
 
 This disables startup and recurring folder scans, including the scan API.
