@@ -28,6 +28,7 @@
     slidesById: new Map(), // slide id -> { slide, deck }
     mode: "pool", // "pool" | "search" | "deck" | "similar"
     searchQuery: "",
+    searchMode: "keyword",
     searchOrder: [], // slide ids, relevance order (search mode)
     matchedSlideIds: new Set(),
     focusDeckId: null,
@@ -40,7 +41,7 @@
   };
 
   const canvas = d3.select("#canvas");
-  let homeRevision = 0;
+  let navigationRevision = 0;
   const canvasNode = canvas.node();
   const viewport = document.getElementById("viewport");
 
@@ -298,41 +299,93 @@
     renderStatic(items);
   }
 
-  function updateBreadcrumb() {
-    const bar = document.getElementById("view-breadcrumb");
-    const label = document.getElementById("view-breadcrumb-label");
-    const refreshBtn = document.getElementById("deck-refresh-btn");
-    if (state.mode === "deck") {
-      const deck = state.deckById.get(state.focusDeckId);
-      bar.classList.remove("hidden");
-      label.textContent = deck ? `Slide deck: ${deck.name}` : "Slide deck";
-      refreshBtn.classList.remove("hidden");
-    } else if (state.mode === "similar") {
-      const entry = state.slidesById.get(state.focusSlideId);
-      bar.classList.remove("hidden");
-      label.textContent = entry ? `Similar to slide #${entry.slide.index_in_deck + 1} in ${entry.deck.name}` : "Similar slides";
-      refreshBtn.classList.add("hidden");
-    } else {
-      bar.classList.add("hidden");
+  // Entries stay newest-first; moving through history only changes the cursor.
+  const navigationHistory = [];
+  let historyIndex = 0;
+
+  function captureLocation() {
+    return {
+      mode: state.mode,
+      searchQuery: state.searchQuery,
+      searchMode: state.searchMode,
+      searchOrder: [...state.searchOrder],
+      matchedSlideIds: new Set(state.matchedSlideIds),
+      focusDeckId: state.focusDeckId,
+      focusSlideId: state.focusSlideId,
+      viewAnchor: { ...state.viewAnchor },
+      similarSlideIds: [...(state.similarSlideIds || [])],
+      showHidden: state.showHidden,
+      transform: d3.zoomTransform(viewport),
+    };
+  }
+
+  function saveLocation() {
+    if (navigationHistory.length) navigationHistory[historyIndex] = captureLocation();
+  }
+
+  function recordLocation() {
+    navigationHistory.splice(0, historyIndex);
+    historyIndex = 0;
+    navigationHistory.unshift(captureLocation());
+    updateBreadcrumb();
+  }
+
+  function locationLabel(location) {
+    if (location.mode === "search") return `Search for "${location.searchQuery}"${location.searchMode === "semantic" ? " (AI)" : ""}`;
+    if (location.mode === "deck") return state.deckById.get(location.focusDeckId)?.name || "Slide deck";
+    if (location.mode === "similar") {
+      const entry = state.slidesById.get(location.focusSlideId);
+      return entry ? `Similarity search: ${entry.deck.name}, slide ${entry.slide.index_in_deck + 1}` : "Similarity search";
     }
+    return "Pool";
+  }
+
+  function updateBreadcrumb() {
+    const select = document.getElementById("history-select");
+    select.replaceChildren(...navigationHistory.map((location, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = locationLabel(location);
+      return option;
+    }));
+    select.value = String(historyIndex);
+    select.title = navigationHistory.length ? locationLabel(navigationHistory[historyIndex]) : "Pool";
+    document.getElementById("history-back-btn").disabled = historyIndex >= navigationHistory.length - 1;
+    document.getElementById("history-forward-btn").disabled = historyIndex === 0;
+    document.getElementById("deck-refresh-btn").classList.toggle("hidden", state.mode !== "deck");
+  }
+
+  function visitHistory(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= navigationHistory.length || index === historyIndex) return;
+    navigationRevision += 1;
+    d3.select(viewport).interrupt();
+    saveLocation();
+    historyIndex = index;
+    const { transform, ...location } = navigationHistory[index];
+    Object.assign(state, location);
+    document.getElementById("search-box").value = state.searchQuery;
+    document.getElementById("search-mode").value = state.searchMode;
+    document.getElementById("toggle-hidden").checked = state.showHidden;
+    hideContextMenu();
+    d3.select(viewport).call(zoomBehavior.transform, transform);
+    render();
+    updateBreadcrumb();
   }
 
   // -- similar-slides force layout --------------------------------------------
   async function showSimilar(slideId, el) {
-    const revision = homeRevision;
+    const revision = ++navigationRevision;
     hideContextMenu();
     const entry = state.slidesById.get(slideId);
     if (!entry) return;
-    const anchor = navigationAnchor(el);
-
     let similar;
     try {
       const res = await fetch(`/api/slides/${slideId}/similar`);
       similar = await res.json();
-      if (revision !== homeRevision) return;
+      if (revision !== navigationRevision) return;
       if (similar && !Array.isArray(similar) && similar.error) throw new Error(similar.error);
     } catch (err) {
-      if (revision !== homeRevision) return;
+      if (revision !== navigationRevision) return;
       window.alert("Could not load similar slides: " + err.message);
       return;
     }
@@ -341,10 +394,13 @@
       return;
     }
 
+    saveLocation();
+    const anchor = navigationAnchor(el);
     state.mode = "similar";
     state.similarSlideIds = similar.map((slide) => slide.id);
     state.focusSlideId = slideId;
     state.viewAnchor = anchor;
+    recordLocation();
     startSimilarSimulation(entry.slide, similar, anchor);
   }
 
@@ -429,13 +485,16 @@
   });
 
   function onSlideClick(slideId, el) {
+    navigationRevision += 1;
     const entry = state.slidesById.get(slideId);
     if (!entry) return;
+    saveLocation();
     const anchor = navigationAnchor(el);
     state.viewAnchor = anchor;
     state.focusDeckId = entry.deck.id;
     state.focusSlideId = slideId;
     state.mode = "deck";
+    recordLocation();
     render();
   }
 
@@ -754,20 +813,21 @@
     }
   }
 
-  document.getElementById("back-to-overview-btn").addEventListener("click", () => {
-    state.mode = state.searchQuery ? "search" : "pool";
-    render();
-  });
+  document.getElementById("history-back-btn").addEventListener("click", () => visitHistory(historyIndex + 1));
+  document.getElementById("history-forward-btn").addEventListener("click", () => visitHistory(historyIndex - 1));
+  document.getElementById("history-select").addEventListener("change", (event) => visitHistory(Number(event.target.value)));
 
   // -- search --------------------------------------------------------------
   async function runSearch(query) {
-    const revision = homeRevision;
+    const revision = ++navigationRevision;
     query = query.trim();
-    state.searchQuery = query;
     if (!query) {
+      saveLocation();
+      state.searchQuery = "";
       state.mode = "pool";
       state.matchedSlideIds = new Set();
       state.searchOrder = [];
+      recordLocation();
       render();
       return;
     }
@@ -775,7 +835,7 @@
     const endpoint = mode === "semantic" ? "/api/search/semantic" : "/api/search";
     const res = await fetch(`${endpoint}?q=${encodeURIComponent(query)}`);
     const results = await res.json();
-    if (revision !== homeRevision) return;
+    if (revision !== navigationRevision) return;
     if (results && !Array.isArray(results) && results.error) {
       window.alert("Search failed: " + results.error);
       return;
@@ -788,9 +848,13 @@
         matched.add(s.id);
       });
     });
+    saveLocation();
+    state.searchQuery = query;
+    state.searchMode = mode;
     state.searchOrder = order;
     state.matchedSlideIds = matched;
     state.mode = "search";
+    recordLocation();
     render();
   }
 
@@ -811,10 +875,12 @@
 
   // -- wiring ----------------------------------------------------------------
   document.getElementById("home-btn").addEventListener("click", () => {
+    saveLocation();
     // Ignore pending search/similarity responses after returning home.
-    homeRevision += 1;
+    navigationRevision += 1;
     state.mode = "pool";
     state.searchQuery = "";
+    state.searchMode = "keyword";
     state.searchOrder = [];
     state.matchedSlideIds = new Set();
     state.focusDeckId = null;
@@ -826,6 +892,7 @@
     document.getElementById("toggle-hidden").checked = false;
     hideContextMenu();
     d3.select(viewport).interrupt().call(zoomBehavior.transform, d3.zoomIdentity);
+    recordLocation();
     render();
   });
 
@@ -855,6 +922,7 @@
     updateSelectionUi();
   });
 
+  recordLocation();
   loadDecks();
   pollScanStatus();
   pollEmbeddingStatus();

@@ -28,11 +28,12 @@
     <span id="embedding-status"></span>
   </header>
 
-  <div id="view-breadcrumb" class="hidden">
-    <span id="view-breadcrumb-label"></span>
+  <nav id="view-breadcrumb" aria-label="Location history">
+    <button id="history-back-btn" type="button" title="Back" aria-label="Back" disabled>←</button>
+    <button id="history-forward-btn" type="button" title="Forward" aria-label="Forward" disabled>→</button>
+    <select id="history-select" aria-label="Current location and history"></select>
     <button id="deck-refresh-btn" class="hidden">↻ Refresh deck</button>
-    <button id="back-to-overview-btn">← Back</button>
-  </div>
+  </nav>
 
   <div id="viewport" tabindex="0" aria-label="Slide view. Use arrow keys or WASD to pan; hold Shift to pan faster.">
     <div id="canvas"></div>
