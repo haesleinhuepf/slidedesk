@@ -99,3 +99,4 @@ within each project session, without a filename prompt.
 - "Export selection" button saves selected slides into a new `.pptx`.
 - Toggle to show/hide hidden slides.
 - Touch support: two-finger pinch to zoom, drag background to pan.
+- Arrow keys or WASD pan the view; hold Shift to pan four times faster.

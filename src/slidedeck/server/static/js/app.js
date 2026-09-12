@@ -16,9 +16,11 @@
   const CELL_W = SLIDE_WIDTH + GAP;
   const CELL_H = SLIDE_HEIGHT + 16 + GAP; // Include the label below each slide.
   const POOL_COLUMNS = 5;
-  const DECK_ROW_LENGTH = 10; // wrap the full-deck view every this many slides
+  const DECK_ROW_LENGTH = POOL_COLUMNS; // wrap the full-deck view every this many slides
   const LONG_PRESS_MS = 1000;
   const MOVE_CANCEL_PX = 6;
+  const KEY_PAN_PX = 40;
+  const FAST_PAN_MULTIPLIER = 4;
 
   const state = {
     decks: [],
@@ -42,7 +44,7 @@
   const canvasNode = canvas.node();
   const viewport = document.getElementById("viewport");
 
-  // -- zoom / pan (mouse drag + touch pinch/pan) -----------------------
+  // -- zoom / pan (mouse drag, touch pinch/pan, arrow keys / WASD) ---------
   const zoomBehavior = d3
     .zoom()
     .scaleExtent([0.2, 4])
@@ -53,6 +55,39 @@
     });
 
   d3.select(viewport).call(zoomBehavior);
+
+  // D3 prevents the mouse's default focus change when starting a drag.
+  // Explicitly leave toolbar inputs so subsequent navigation keys pan the view.
+  viewport.addEventListener("pointerdown", () => {
+    viewport.focus({ preventScroll: true });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
+    if (event.target.closest("input, textarea, select") || event.target.isContentEditable) return;
+    if (document.getElementById("slide-context-menu").classList.contains("visible")) return;
+
+    // Move the view toward the arrow, as when scrolling through the slides.
+    let dx = 0;
+    let dy = 0;
+    switch (event.key.toLowerCase()) {
+      case "a":
+      case "arrowleft": dx = 1; break;
+      case "d":
+      case "arrowright": dx = -1; break;
+      case "w":
+      case "arrowup": dy = 1; break;
+      case "s":
+      case "arrowdown": dy = -1; break;
+      default: return;
+    }
+    event.preventDefault();
+    const step = KEY_PAN_PX * (event.shiftKey ? FAST_PAN_MULTIPLIER : 1);
+    const transform = d3.zoomTransform(viewport);
+    // D3 translations use canvas units; keep keyboard speed constant on screen.
+    d3.select(viewport).interrupt().call(zoomBehavior.translateBy,
+      dx * step / transform.k, dy * step / transform.k);
+  });
 
   function screenToCanvas(clientX, clientY) {
     const t = d3.zoomTransform(viewport);
