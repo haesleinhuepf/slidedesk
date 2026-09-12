@@ -1,4 +1,4 @@
-# slidedeck
+# SlideDesk
 
 Index a folder full of `.pptx` files, automatically render `.pdf` / `.hidden.pdf`
 exports, extract slide text, and browse/search everything in a touch-friendly
@@ -9,6 +9,10 @@ browser GUI.
 ```bash
 pip install -e .
 ```
+
+After updating from slidedeck, run this command again to install the `slidedesk`
+command. Python imports now use `slidedesk`. Existing projects keep using
+`slidedeck.db` and `.slidedeck_cache` so saved data remains available.
 
 Requires [Poppler](https://poppler.freedesktop.org/) (`pdftoppm`/`pdfinfo` on PATH,
 used by `pdf2image` to render slide images from PDFs) and, on Windows, a local
@@ -22,7 +26,7 @@ conda install poppler
 ## Usage
 
 ```bash
-slidedeck serve /path/to/folder
+slidedesk serve /path/to/folder
 ```
 
 This creates (or opens) a `slidedeck.db` SQLite project file inside the folder,
@@ -33,7 +37,7 @@ To browse decks already stored in `slidedeck.db` without scanning folders for
 changes or new decks:
 
 ```bash
-slidedeck serve /path/to/folder --no-scan
+slidedesk serve /path/to/folder --no-scan
 ```
 
 This disables startup and recurring folder scans, including the scan API.
@@ -47,7 +51,7 @@ embeddings, start Ollama and download the model, then pass `--local`:
 
 ```bash
 ollama pull jeffh/intfloat-multilingual-e5-large-instruct:f32
-slidedeck serve /path/to/folder --local
+slidedesk serve /path/to/folder --local
 ```
 
 Local mode uses `http://localhost:11434/v1/` and does not need a KIARA API key.
@@ -69,7 +73,7 @@ In Python, `project.embed_images_pending()` processes a batch synchronously;
 `project.scan_in_background()` maintains both caches automatically.
 
 ```python
-from slidedeck import SlideProject
+from slidedesk import SlideProject
 
 project = SlideProject("/path/to/folder")
 project.scan()  # synchronous scan; use scan_in_background() for async

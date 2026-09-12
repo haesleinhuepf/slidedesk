@@ -2,7 +2,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
-const source = fs.readFileSync("src/slidedeck/server/static/js/app.js", "utf8");
+const source = fs.readFileSync("src/slidedesk/server/static/js/app.js", "utf8");
 const fitSource = source.slice(source.indexOf("  function fitView("), source.indexOf("  // -- data loading"));
 
 function fit(count, focusIndex, position, width = 1400, height = 900) {

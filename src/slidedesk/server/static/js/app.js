@@ -1,4 +1,4 @@
-/* slidedeck GUI: D3-powered zoom/pan view of individual slides, with four
+/* slidedesk GUI: D3-powered zoom/pan view of individual slides, with four
  * layouts driven by `state.mode`:
  *   - "pool":   all slides, most recently changed deck first (initial view).
  *   - "search": only slides matching the current search query.
@@ -717,6 +717,9 @@
     menu.dataset.slideId = el.getAttribute("data-slide-id");
     menu.dataset.source = selectionList.contains(el) ? "selection" : "canvas";
     const { slide, deck } = state.slidesById.get(Number(menu.dataset.slideId));
+    document.getElementById("menu-show-in-deck").disabled = state.mode === "deck";
+    document.getElementById("menu-toggle-slide-hidden").hidden = state.mode === "pool";
+    document.getElementById("menu-toggle-deck-hidden").hidden = state.mode !== "pool";
     document.getElementById("menu-toggle-slide-hidden").textContent = slide.hidden ? "Unhide slide" : "Hide slide";
     document.getElementById("menu-toggle-deck-hidden").textContent = deck.slides.every((s) => s.hidden) ? "Unhide slide deck" : "Hide slide deck";
     document.getElementById("menu-remove").hidden = menu.dataset.source !== "selection";
@@ -851,7 +854,10 @@
 
   document.getElementById("history-back-btn").addEventListener("click", () => visitHistory(historyIndex + 1));
   document.getElementById("history-forward-btn").addEventListener("click", () => visitHistory(historyIndex - 1));
-  document.getElementById("history-select").addEventListener("change", (event) => visitHistory(Number(event.target.value)));
+  document.getElementById("history-select").addEventListener("change", (event) => {
+    visitHistory(Number(event.target.value));
+    viewport.focus({ preventScroll: true });
+  });
 
   // -- search --------------------------------------------------------------
   async function runSearch(query) {

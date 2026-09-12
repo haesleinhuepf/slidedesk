@@ -2,8 +2,8 @@ from unittest.mock import Mock
 
 from click.testing import CliRunner
 
-from slidedeck import SlideProject
-from slidedeck.cli import main
+from slidedesk import SlideProject
+from slidedesk.cli import main
 
 
 def test_no_scan_serves_existing_database(tmp_path, monkeypatch):

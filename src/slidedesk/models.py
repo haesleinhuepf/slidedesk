@@ -1,4 +1,4 @@
-"""Plain data objects returned by the slidedeck Python API."""
+"""Plain data objects returned by the slidedesk Python API."""
 from __future__ import annotations
 
 from dataclasses import dataclass

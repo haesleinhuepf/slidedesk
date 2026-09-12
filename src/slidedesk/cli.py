@@ -1,4 +1,4 @@
-"""Command-line entry point: `slidedeck serve <folder>`."""
+"""Command-line entry point: `slidedesk serve <folder>`."""
 from __future__ import annotations
 
 import threading
@@ -11,7 +11,7 @@ from .project import SlideProject
 
 @click.group()
 def main() -> None:
-    """slidedeck: index and browse .pptx slide decks in a folder."""
+    """slidedesk: index and browse .pptx slide decks in a folder."""
 
 
 @main.command()

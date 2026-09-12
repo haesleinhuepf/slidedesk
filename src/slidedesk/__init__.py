@@ -1,4 +1,4 @@
-"""slidedeck: index, browse and search .pptx slide decks."""
+"""slidedesk: index, browse and search .pptx slide decks."""
 from .models import Deck, Slide
 from .project import SlideProject
 

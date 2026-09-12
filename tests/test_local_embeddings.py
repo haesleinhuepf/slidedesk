@@ -4,8 +4,8 @@ from unittest.mock import Mock
 import pytest
 from click.testing import CliRunner
 
-from slidedeck import SlideProject, embeddings
-from slidedeck.cli import main
+from slidedesk import SlideProject, embeddings
+from slidedesk.cli import main
 
 
 def test_local_endpoint_without_kiara_key(monkeypatch):
@@ -66,8 +66,8 @@ def test_provider_switch_recomputes_cache(tmp_path, monkeypatch):
 def test_cli_local_option(tmp_path, monkeypatch, args, local):
     factory = Mock()
     app = Mock()
-    monkeypatch.setattr("slidedeck.cli.SlideProject", factory)
-    monkeypatch.setattr("slidedeck.server.app.create_app", Mock(return_value=app))
+    monkeypatch.setattr("slidedesk.cli.SlideProject", factory)
+    monkeypatch.setattr("slidedesk.server.app.create_app", Mock(return_value=app))
     result = CliRunner().invoke(main, ["serve", str(tmp_path), "--no-browser", *args])
     assert result.exit_code == 0, result.output
     factory.assert_called_once_with(str(tmp_path), local=local)

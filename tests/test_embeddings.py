@@ -1,7 +1,7 @@
 import pytest
 
-from slidedeck import SlideProject
-from slidedeck import embeddings
+from slidedesk import SlideProject
+from slidedesk import embeddings
 
 
 @pytest.mark.parametrize(

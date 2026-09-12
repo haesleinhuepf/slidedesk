@@ -1,4 +1,4 @@
-"""The unified slidedeck Python API: `SlideProject` ties together indexing,
+"""The unified slidedesk Python API: `SlideProject` ties together indexing,
 PDF conversion, slide-image rendering and search/export over one project folder.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ CACHE_DIRNAME = ".slidedeck_cache"
 
 
 class SlideProject:
-    """Opens or creates a slidedeck project rooted at `folder`."""
+    """Opens or creates a slidedesk project rooted at `folder`."""
 
     EMBEDDING_MODEL = embeddings.DEFAULT_MODEL
     IMAGE_EMBEDDING_MODEL = image_embeddings.MODEL
@@ -51,7 +51,7 @@ class SlideProject:
             "error": None,
         }
         self._scanner: Optional[BackgroundScanner] = None
-        self._export_tempdir = tempfile.TemporaryDirectory(prefix="slidedeck-exports-")
+        self._export_tempdir = tempfile.TemporaryDirectory(prefix="slidedesk-exports-")
         self.export_dir = Path(self._export_tempdir.name)
         self._export_lock = threading.Lock()
         self._export_number = 0

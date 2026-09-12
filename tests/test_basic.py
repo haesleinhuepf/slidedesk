@@ -1,9 +1,9 @@
-"""Basic smoke tests for the slidedeck DB layer and public API (no PowerPoint
+"""Basic smoke tests for the slidedesk DB layer and public API (no PowerPoint
 files or LibreOffice/Poppler required for these).
 """
 from pathlib import Path
 
-from slidedeck import SlideProject
+from slidedesk import SlideProject
 
 
 def test_project_creates_db(tmp_path):

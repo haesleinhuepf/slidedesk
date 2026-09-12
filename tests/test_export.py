@@ -2,10 +2,10 @@ from zipfile import ZipFile
 
 from pptx import Presentation
 
-from slidedeck import SlideProject
-from slidedeck.pptx_tools import extract_text, is_slide_hidden, set_slide_hidden
-from slidedeck.scanner import _index_slides
-from slidedeck.server.app import create_app
+from slidedesk import SlideProject
+from slidedesk.pptx_tools import extract_text, is_slide_hidden, set_slide_hidden
+from slidedesk.scanner import _index_slides
+from slidedesk.server.app import create_app
 
 
 def test_export_selected_slide_ids_in_order(tmp_path):

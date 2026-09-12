@@ -1,9 +1,9 @@
 import pytest
 from pptx import Presentation
 
-from slidedeck import SlideProject
-from slidedeck.scanner import _index_slides
-from slidedeck.server.app import create_app
+from slidedesk import SlideProject
+from slidedesk.scanner import _index_slides
+from slidedesk.server.app import create_app
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def test_missing_visibility_target(project, url):
 
 
 def test_visibility_does_not_change_render_source(project, monkeypatch):
-    from slidedeck import images
+    from slidedesk import images
 
     monkeypatch.setattr(images, "render_page", lambda path, page, cache, dpi: (path.name, page))
     first, second = project.slides(1)

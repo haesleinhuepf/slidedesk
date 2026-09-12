@@ -1,4 +1,4 @@
-"""Flask application exposing the slidedeck REST API and GUI."""
+"""Flask application exposing the slidedesk REST API and GUI."""
 from __future__ import annotations
 
 import io

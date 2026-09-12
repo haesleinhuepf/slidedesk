@@ -1,4 +1,4 @@
-"""Low-level SQLite schema and connection helpers for a slidedeck project."""
+"""Low-level SQLite schema and connection helpers for a slidedesk project."""
 from __future__ import annotations
 
 import sqlite3

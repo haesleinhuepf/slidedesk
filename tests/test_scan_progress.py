@@ -3,8 +3,8 @@ import threading
 
 from pptx import Presentation
 
-from slidedeck import SlideProject, scanner
-from slidedeck.server.app import create_app
+from slidedesk import SlideProject, scanner
+from slidedesk.server.app import create_app
 
 
 def test_decks_available_while_next_deck_is_converting(tmp_path, monkeypatch):

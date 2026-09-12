@@ -4,8 +4,8 @@ from unittest.mock import Mock
 import pytest
 from PIL import Image
 
-from slidedeck import SlideProject, embeddings, image_embeddings
-from slidedeck.server.app import create_app
+from slidedesk import SlideProject, embeddings, image_embeddings
+from slidedesk.server.app import create_app
 
 
 @pytest.fixture
@@ -148,7 +148,7 @@ def test_stale_image_vectors_are_not_returned(project):
 
 
 def test_image_worker_does_not_block_scans_or_text(project, monkeypatch):
-    from slidedeck import scanner
+    from slidedesk import scanner
     entered = threading.Event()
     release = threading.Event()
     scanned = threading.Event()
@@ -179,7 +179,7 @@ def test_image_worker_does_not_block_scans_or_text(project, monkeypatch):
 
 def test_scan_keeps_decks_and_removes_their_cached_vectors(tmp_path, monkeypatch):
     from pptx import Presentation
-    from slidedeck import scanner
+    from slidedesk import scanner
     monkeypatch.setattr(scanner, "convert_pptx_to_pdf", lambda source, dest: dest.touch())
     monkeypatch.setattr(image_embeddings, "embed_image", Mock(return_value=[1, 0]))
     for name in ("one.pptx", "two.pptx"):

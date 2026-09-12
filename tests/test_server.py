@@ -1,7 +1,7 @@
 import pytest
 
-from slidedeck import SlideProject
-from slidedeck.server.app import create_app
+from slidedesk import SlideProject
+from slidedesk.server.app import create_app
 
 
 @pytest.fixture
