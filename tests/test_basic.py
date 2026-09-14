@@ -8,8 +8,22 @@ from slidedesk import SlideProject
 
 def test_project_creates_db(tmp_path):
     project = SlideProject(tmp_path)
+    assert project.db_path == tmp_path / ".slidedesk" / "slidedesk.db"
     assert project.db_path.exists()
     assert project.decks() == []
+    project.close()
+
+
+def test_project_moves_legacy_db(tmp_path):
+    project = SlideProject(tmp_path)
+    project.conn.execute("INSERT INTO meta VALUES ('test', 'saved')")
+    project.conn.commit()
+    project.close()
+    project.db_path.rename(tmp_path / "slidedesk.db")
+
+    project = SlideProject(tmp_path)
+    assert not (tmp_path / "slidedesk.db").exists()
+    assert project.conn.execute("SELECT value FROM meta WHERE key = 'test'").fetchone()[0] == "saved"
     project.close()
 
 

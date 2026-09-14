@@ -23,7 +23,7 @@ from .scanner import BackgroundScanner, scan_once
 log = logging.getLogger(__name__)
 
 DB_FILENAME = "slidedesk.db"
-CACHE_DIRNAME = ".slidedesk_cache"
+CACHE_DIRNAME = ".slidedesk/_cache"
 
 
 class _EmbeddingTextParser(HTMLParser):
@@ -63,9 +63,12 @@ class SlideProject:
     def __init__(self, folder: str | Path):
         self.folder = Path(folder).expanduser().resolve()
         self.folder.mkdir(parents=True, exist_ok=True)
-        self.db_path = self.folder / DB_FILENAME
+        self.db_path = self.folder / ".slidedesk" / DB_FILENAME
         self.cache_dir = self.folder / CACHE_DIRNAME
-        self.cache_dir.mkdir(exist_ok=True)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        legacy_db_path = self.folder / DB_FILENAME
+        if not self.db_path.exists() and legacy_db_path.is_file():
+            legacy_db_path.rename(self.db_path)
         self.conn = db.connect(self.db_path)
         self._conn_lock = threading.RLock()
         self._scan_lock = threading.Lock()

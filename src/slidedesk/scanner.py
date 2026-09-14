@@ -22,14 +22,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 IGNORED_PREFIXES = ("~$",)
-CACHE_DIRNAME = ".slidedeck_cache"
+IGNORED_DIRNAMES = {".slidedesk", ".slidedesk_cache", ".slidedeck_cache"}
 
 
 def _iter_pptx_files(root: Path):
     for path in root.rglob("*.pptx"):
         if path.name.startswith(IGNORED_PREFIXES):
             continue
-        if CACHE_DIRNAME in path.parts:
+        if IGNORED_DIRNAMES.intersection(path.relative_to(root).parts[:-1]):
             continue
         yield path
 
@@ -119,10 +119,22 @@ def _scan_once(
                 "SELECT * FROM decks WHERE pptx_path = ?", (rel_pptx,)
             ).fetchone()
 
-        pdf_rel = str(Path(rel_pptx).with_suffix(".pdf"))
-        hidden_pdf_rel = rel_pptx[: -len(".pptx")] + ".hidden.pdf"
-        pdf_path = root / pdf_rel
-        hidden_pdf_path = root / hidden_pdf_rel
+        pdf_path = (project.cache_dir / rel_pptx).with_suffix(".pdf")
+        hidden_pdf_path = (project.cache_dir / rel_pptx).with_suffix(".hidden.pdf")
+        pdf_rel = _rel(root, pdf_path)
+        hidden_pdf_rel = _rel(root, hidden_pdf_path)
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Relocate previously indexed sidecar exports, preserving their mtimes.
+        if row is not None:
+            for column, destination, suffix in (
+                ("pdf_path", pdf_path, ".pdf"),
+                ("hidden_pdf_path", hidden_pdf_path, ".hidden.pdf"),
+            ):
+                legacy_path = pptx_path.with_suffix(suffix)
+                if (row[column] and root / row[column] == legacy_path
+                        and legacy_path.is_file() and not destination.exists()):
+                    legacy_path.rename(destination)
 
         needs_reindex = force or row is None or row["pptx_mtime"] != mtime
 

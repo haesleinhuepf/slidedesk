@@ -27,8 +27,44 @@ def test_default_huggingface_model(monkeypatch):
     assert embeddings.is_available()
     assert embeddings.embed_local("hello") == pytest.approx([0.6, 0.8])
     tokenizer_factory.from_pretrained.assert_called_once_with(embeddings.DEFAULT_MODEL)
-    model_factory.from_pretrained.assert_called_once_with(embeddings.DEFAULT_MODEL)
+    model_factory.from_pretrained.assert_called_once_with(
+        embeddings.DEFAULT_MODEL, dtype=torch.float32
+    )
     tokenizer.assert_called_once_with("hello", return_tensors="pt", truncation=True, max_length=512)
+
+
+def test_mixed_dtype_model_is_normalized_before_inference(monkeypatch):
+    class MixedDtypeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.tokens = torch.nn.Embedding(3, 2).half()
+            self.projection = torch.nn.Linear(2, 2).float()
+
+        def forward(self, input_ids, attention_mask):
+            return SimpleNamespace(
+                last_hidden_state=self.projection(self.tokens(input_ids))
+            )
+
+    model = MixedDtypeModel()
+    inputs = {
+        "input_ids": torch.tensor([[1, 2]]),
+        "attention_mask": torch.tensor([[1, 1]]),
+    }
+    with pytest.raises(RuntimeError, match="same dtype"):
+        model(**inputs)
+    monkeypatch.setattr("transformers.AutoModel.from_pretrained", Mock(return_value=model))
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained",
+        Mock(return_value=Mock(return_value=inputs)),
+    )
+    monkeypatch.setattr(embeddings, "_local_model_cache", {})
+
+    vector = torch.tensor(embeddings.embed_local("hello"))
+
+    assert all(parameter.dtype == torch.float32 for parameter in model.parameters())
+    assert inputs["input_ids"].dtype == torch.int64
+    assert torch.isfinite(vector).all()
+    assert vector.norm().item() == pytest.approx(1.0)
 
 
 def test_default_embedding_recomputes_cache(tmp_path, monkeypatch):

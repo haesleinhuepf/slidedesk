@@ -8,3 +8,5 @@ dist/
 slidedeck.db
 .slidedeck_cache/
 example/
+
+.test_tmp*

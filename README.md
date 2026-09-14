@@ -13,7 +13,13 @@ pip install slidedesk
 
 After updating from slidedeck, run this command again to install the `slidedesk`
 command. Python imports now use `slidedesk`. Existing projects keep using
-`slidedesk.db` and `.slidedesk_cache` so saved data remains available.
+`slidedesk.db` so saved data remains available.
+
+Generated PDFs and slide images are stored in `.slidedesk/_cache`. PDF exports
+mirror the source folder hierarchy: `talks/deck.pptx` produces
+`.slidedesk/_cache/talks/deck.pdf` and
+`.slidedesk/_cache/talks/deck.hidden.pdf`. Existing indexed PDF sidecars are moved
+into this cache on the next scan.
 
 Requires Microsoft PowerPoint installed and only works on Windows.
 
@@ -32,7 +38,7 @@ conda install poppler
 slidedesk /path/to/folder
 ```
 
-This creates (or opens) a `slidedesk.db` SQLite project file inside the folder,
+This creates (or opens) a `.slidedesk/slidedesk.db` SQLite project file inside the folder,
 starts scanning it for `.pptx` files in the background, and opens a browser GUI at
 `http://127.0.0.1:5000`. You can also make it use a different port using the 
 `--port 8989` option.
