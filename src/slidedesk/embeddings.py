@@ -42,7 +42,10 @@ def embed_local(text: str, embedding_model: str = DEFAULT_MODEL) -> List[float]:
     with _local_model_lock:
         if embedding_model not in _local_model_cache:
             tokenizer = AutoTokenizer.from_pretrained(embedding_model)
-            model = AutoModel.from_pretrained(embedding_model)
+            model = AutoModel.from_pretrained(embedding_model, dtype=torch.float32)
+            # Keep all floating-point parameters and buffers consistent on CPU,
+            # including layers whose checkpoint dtype differs from the rest.
+            model.float()
             model.eval()
             _local_model_cache[embedding_model] = (tokenizer, model)
         tokenizer, model = _local_model_cache[embedding_model]
@@ -70,9 +73,11 @@ def unpack_vector(blob: bytes) -> array.array:
 
 
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
+    """Compute the cosine similarity between two vectors.""" 
     dot = sum(x * y for x, y in zip(a, b))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(y * y for y in b))
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+    
