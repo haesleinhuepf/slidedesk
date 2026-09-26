@@ -372,7 +372,7 @@ class SlideProject:
         return [s for s in slides if s is not None]
 
     # -- rendering --------------------------------------------------------
-    def slide_image(self, slide_id: int, dpi: int = 110) -> Image.Image:
+    def slide_image(self, slide_id: int) -> Image.Image:
         """Render the given slide to a PIL Image, using the correct PDF export."""
         slide = self.slide(slide_id)
         if slide is None:
@@ -392,7 +392,7 @@ class SlideProject:
             pdf_path = self.folder / deck.pdf_path
             page = slide.visible_pdf_page
 
-        return images.render_page(pdf_path, page, self.cache_dir, dpi=dpi)
+        return images.render_page(pdf_path, page, self.cache_dir)
 
     def slide_pptx_object(self, slide_id: int) -> PptxSlide:
         """Open the source .pptx and return the python-pptx Slide object."""

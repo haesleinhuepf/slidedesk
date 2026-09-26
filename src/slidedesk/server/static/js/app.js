@@ -320,7 +320,7 @@
   function thumbInnerHTML(item) {
     const badge = item.slide.hidden ? '<span class="badge">hidden</span>' : "";
     const label = `<span class="deck-label">${escapeHtml(item.deck.name)} #${item.slide.index_in_deck + 1} / ${item.deck.slides.length}</span>`;
-    return `<img loading="lazy" src="/api/slides/${item.slide.id}/image?dpi=90" alt="slide ${item.slide.index_in_deck + 1}" />${badge}${label}`;
+    return `<img loading="lazy" src="/api/slides/${item.slide.id}/image" alt="slide ${item.slide.index_in_deck + 1}" />${badge}${label}`;
   }
 
   function renderStatic(items) {
@@ -746,7 +746,7 @@
       const { slide, deck } = state.slidesById.get(id);
       const label = `${i + 1}. ${deck.name} #${slide.index_in_deck + 1} / ${deck.slides.length}`;
       this.setAttribute("aria-label", label);
-      const markup = `<img loading="lazy" draggable="false" src="/api/slides/${id}/image?dpi=90" alt="" /><span>${escapeHtml(label)}</span>`;
+      const markup = `<img loading="lazy" draggable="false" src="/api/slides/${id}/image" alt="" /><span>${escapeHtml(label)}</span>`;
       if (this.innerHTML !== markup) this.innerHTML = markup;
     });
     cards.order();

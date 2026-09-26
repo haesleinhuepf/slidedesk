@@ -266,9 +266,8 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
 
     @app.get("/api/slides/<int(signed=True):slide_id>/image")
     def api_slide_image(slide_id):
-        dpi = request.args.get("dpi", default=110, type=int)
         try:
-            image = project.slide_image(slide_id, dpi=dpi)
+            image = project.slide_image(slide_id)
         except (KeyError, FileNotFoundError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 404
         buf = io.BytesIO()
