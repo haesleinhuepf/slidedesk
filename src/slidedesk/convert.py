@@ -13,10 +13,17 @@ from pathlib import Path
 _PP_SAVE_AS_PDF = 32  # PowerPoint's ppSaveAsPDF file-format constant
 
 _local = threading.local()
+_apps = []
+_apps_lock = threading.Lock()
 
 
 class ConversionError(RuntimeError):
     pass
+
+
+def _retain_app(app) -> None:
+    with _apps_lock:
+        _apps.append(app)
 
 
 def repair_pptx(source: Path, repaired: Path) -> None:
@@ -38,22 +45,19 @@ def repair_pptx(source: Path, repaired: Path) -> None:
     try:
         try:
             app = win32com.client.DispatchEx("PowerPoint.Application")
+            _retain_app(app)
             app.DisplayAlerts = 2  # ppAlertsNone
             presentation = app.Presentations.Open(
                 str(source), ReadOnly=False, Untitled=False, WithWindow=False
             )
             presentation.SaveAs(str(repaired), 24)  # ppSaveAsOpenXMLPresentation
         finally:
-            try:
-                if presentation is not None:
-                    presentation.Close()
-            finally:
-                if app is not None:
-                    app.Quit()
+            if presentation is not None:
+                presentation.Close()
     except Exception as exc:
-        raise ConversionError(f"PowerPoint failed to repair {source.name}: {exc}") from exc
-    finally:
         pythoncom.CoUninitialize()
+        raise ConversionError(f"PowerPoint failed to repair {source.name}: {exc}") from exc
+    pythoncom.CoUninitialize()
 
     if not repaired.is_file() or repaired.stat().st_size == 0:
         raise ConversionError(f"PowerPoint did not produce {repaired.name}")
@@ -83,6 +87,7 @@ def _get_powerpoint_app():
         app = win32com.client.DispatchEx("PowerPoint.Application")
     except Exception as exc:
         raise ConversionError(f"Could not start PowerPoint: {exc}") from exc
+    _retain_app(app)
     _local.app = app
     return app
 
@@ -113,18 +118,4 @@ def convert_pptx_to_pdf(pptx_path: Path, out_pdf_path: Path, timeout: int = 180)
 
 
 def shutdown() -> None:
-    """Quit the current thread's PowerPoint instance, if one was started."""
-    app = getattr(_local, "app", None)
-    if app is None:
-        return
-    try:
-        app.Quit()
-    except Exception:
-        pass
-    _local.app = None
-    try:
-        import pythoncom
-
-        pythoncom.CoUninitialize()
-    except Exception:
-        pass
+    """Compatibility hook; PowerPoint instances are intentionally left open."""
