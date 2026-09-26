@@ -28,7 +28,7 @@ def test_default_huggingface_model(monkeypatch):
     assert embeddings.embed_local("hello") == pytest.approx([0.6, 0.8])
     tokenizer_factory.from_pretrained.assert_called_once_with(embeddings.DEFAULT_MODEL)
     model_factory.from_pretrained.assert_called_once_with(
-        embeddings.DEFAULT_MODEL, dtype=torch.float32
+        embeddings.DEFAULT_MODEL, dtype=torch.float32, low_cpu_mem_usage=False
     )
     tokenizer.assert_called_once_with("hello", return_tensors="pt", truncation=True, max_length=512)
 

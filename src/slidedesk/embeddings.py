@@ -31,6 +31,24 @@ def is_available() -> bool:
     return True
 
 
+def get_device():
+    """Pick the best available torch device (CUDA > MPS > CPU)."""
+    import torch
+
+    try:
+        cuda = getattr(torch, "cuda", None)
+        if cuda is not None and cuda.is_available():
+            return torch.device("cuda")
+        backends = getattr(torch, "backends", None)
+        mps = getattr(backends, "mps", None) if backends is not None else None
+        if mps is not None and mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    except AttributeError:
+        # torch module stubbed out (e.g. in tests) without a device API.
+        return "cpu"
+
+
 def embed_local(text: str, embedding_model: str = DEFAULT_MODEL) -> List[float]:
     """Embed `text` using a locally downloaded Hugging Face E5 model."""
     try:
@@ -39,18 +57,29 @@ def embed_local(text: str, embedding_model: str = DEFAULT_MODEL) -> List[float]:
     except ImportError as exc:
         raise EmbeddingError("The 'torch' and 'transformers' packages are required for embeddings") from exc
 
+    device = get_device()
     with _local_model_lock:
-        if embedding_model not in _local_model_cache:
+        cache_key = (embedding_model, str(device))
+        if cache_key not in _local_model_cache:
             tokenizer = AutoTokenizer.from_pretrained(embedding_model)
-            model = AutoModel.from_pretrained(embedding_model, dtype=torch.float32)
-            # Keep all floating-point parameters and buffers consistent on CPU,
+            # low_cpu_mem_usage would place weights on the "meta" device; disable it
+            # so the model is materialized directly and can be moved with .to(device).
+            model = AutoModel.from_pretrained(
+                embedding_model, dtype=torch.float32, low_cpu_mem_usage=False
+            )
+            # Keep all floating-point parameters and buffers consistent,
             # including layers whose checkpoint dtype differs from the rest.
             model.float()
+            model.to(device)
             model.eval()
-            _local_model_cache[embedding_model] = (tokenizer, model)
-        tokenizer, model = _local_model_cache[embedding_model]
+            _local_model_cache[cache_key] = (tokenizer, model)
+        tokenizer, model = _local_model_cache[cache_key]
 
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    inputs = {
+        key: value.to(device) if hasattr(value, "to") else value
+        for key, value in inputs.items()
+    }
     with torch.inference_mode():
         outputs = model(**inputs)
         token_embeddings = outputs.last_hidden_state

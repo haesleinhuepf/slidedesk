@@ -28,7 +28,7 @@ def test_generate_list_uses_granite_chat_prompt_and_caches_model(monkeypatch):
 
     tokenizer_factory.from_pretrained.assert_called_once_with(text_generation.MODEL)
     model_factory.from_pretrained.assert_called_once_with(
-        text_generation.MODEL, dtype=torch.float32
+        text_generation.MODEL, dtype=torch.float32, low_cpu_mem_usage=False
     )
     messages = tokenizer.apply_chat_template.call_args_list[0].args[0]
     assert messages[0] == {"role": "system", "content": text_generation.SYSTEM_PROMPT}

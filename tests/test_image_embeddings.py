@@ -198,7 +198,7 @@ def test_clip_loads_once_and_uses_inference(monkeypatch, structured_output):
     with Image.new("RGBA", (32, 32)) as image:
         assert image_embeddings.embed_image(image) == [1, 2]
         assert image_embeddings.embed_image(image) == [1, 2]
-    model_class.from_pretrained.assert_called_once_with(image_embeddings.MODEL)
+    model_class.from_pretrained.assert_called_once_with(image_embeddings.MODEL, low_cpu_mem_usage=False)
     encoder.eval.assert_called_once()
     assert processor.call_args.kwargs["images"].mode == "RGB"
     assert no_grad.call_count == 2
@@ -220,7 +220,7 @@ def test_real_clip_inference_without_model_download(monkeypatch):
     model = transformers.CLIPModel(config)
     processor = transformers.CLIPImageProcessor(
         size={"shortest_edge": 32}, crop_size={"height": 32, "width": 32})
-    monkeypatch.setattr(transformers.CLIPModel, "from_pretrained", lambda name: model)
+    monkeypatch.setattr(transformers.CLIPModel, "from_pretrained", lambda name, **kwargs: model)
     monkeypatch.setattr(transformers.CLIPProcessor, "from_pretrained", lambda name: processor)
     monkeypatch.setattr(image_embeddings, "_models", {})
     with Image.new("RGB", (64, 32), "red") as image:
