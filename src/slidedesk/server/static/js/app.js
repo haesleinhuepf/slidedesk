@@ -1203,6 +1203,18 @@
   }
 
   // -- wiring ----------------------------------------------------------------
+  document.getElementById("exit-btn").addEventListener("click", async () => {
+    if (!window.confirm("Exit SlideDesk? This will stop the server.")) return;
+    try {
+      await fetch("/api/shutdown", { method: "POST", keepalive: true });
+    } catch (err) {
+      // Server process exits before it can respond; ignore the resulting fetch error.
+    }
+    window.close();
+    // Some browsers refuse to close tabs not opened by script; show a fallback message.
+    document.body.innerHTML = "<p style=\"padding:2rem;font-family:sans-serif;color:#e8eaed;background:#1e2126;\">SlideDesk server stopped. You may close this tab.</p>";
+  });
+
   document.getElementById("home-btn").addEventListener("click", () => {
     saveLocation();
     // Ignore pending search/similarity responses after returning home.

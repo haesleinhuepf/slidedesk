@@ -43,6 +43,20 @@ html, body {
 
 #home-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+#exit-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid #6b2b2b;
+  background: #3a2020;
+  color: #ff8a8a;
+  cursor: pointer;
+}
+
+#exit-btn:hover { background: #4a2626; }
+#exit-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 #search-box {
   flex: 1;
   max-width: 420px;

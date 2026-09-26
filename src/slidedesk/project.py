@@ -87,9 +87,9 @@ class SlideProject:
         self._image_embedding_lock = threading.Lock()
 
     # -- indexing -----------------------------------------------------
-    def scan(self) -> None:
+    def scan(self, stop_event: Optional[threading.Event] = None) -> None:
         """Synchronously scan the folder once, updating the database."""
-        scan_once(self)
+        scan_once(self, stop_event=stop_event)
     
     def refresh_deck(self, deck_id: int) -> None:
         """Force a fresh scan of one deck and its derived database contents."""
@@ -110,10 +110,15 @@ class SlideProject:
         return dict(self._status)
 
     def close(self) -> None:
+        print("Closing SlideDesk project...")
+        print("Stopping background scan...")
         self.stop_background_scan()
         convert.shutdown()
+        print("Closing database connection...")
         self.conn.close()
+        print("Cleaning up export temporary directory...")
         self._export_tempdir.cleanup()
+        print("SlideDesk project closed.")
 
     # -- reading data ---------------------------------------------------
     def decks(self) -> List[Deck]:
@@ -209,7 +214,7 @@ class SlideProject:
                        "total": len(image_rows), "embedded": image_done},
         }
 
-    def embed_pending(self, limit: int = 20) -> int:
+    def embed_pending(self, limit: int = 20, stop_event: Optional[threading.Event] = None) -> int:
         """Compute and cache embeddings for up to `limit` slides that don't yet
         have one for the current model. Returns the number of slides embedded.
         """
@@ -226,6 +231,8 @@ class SlideProject:
             ).fetchall()
         count = 0
         for row in rows:
+            if stop_event and stop_event.is_set():
+                break
             try:
                 vector = self._embed(_text_for_embedding(row["text"])[:1024])
             except Exception as exc:
@@ -279,6 +286,7 @@ class SlideProject:
                     "LEFT JOIN slide_image_embeddings e ON e.slide_id = s.id ORDER BY s.id"
                 ).fetchall()
             for row in rows:
+                print(f"Processing slide {row['id']} for image embedding.", stop_event)
                 if count >= limit or (stop_event is not None and stop_event.is_set()):
                     break
                 key = self._image_source_key(row["id"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import threading
 import uuid
 from pathlib import Path
@@ -52,6 +53,20 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
     @app.get("/")
     def index():
         return render_template("index.html")
+
+    @app.post("/api/shutdown")
+    def api_shutdown():
+        print("Shutdown requested.")
+        def _exit():
+            try:
+                print("Closing project...")
+                project.close()
+            finally:
+                print("Exiting...")
+                os._exit(0)
+
+        threading.Timer(0.2, _exit).start()
+        return jsonify({"ok": True})
 
     @app.get("/api/decks")
     def api_decks():

@@ -78,15 +78,17 @@ def _index_slides(conn, deck_id: int, pptx_path: Path) -> None:
 
 
 def scan_once(
-    project: "SlideProject", deck_id: Optional[int] = None, force: bool = False
+    project: "SlideProject", deck_id: Optional[int] = None, force: bool = False,
+    stop_event: Optional[threading.Event] = None,
 ) -> None:
     # Serialize scans without blocking readers during conversion.
     with project._scan_lock:
-        _scan_once(project, deck_id=deck_id, force=force)
+        _scan_once(project, deck_id=deck_id, force=force, stop_event=stop_event)
 
 
 def _scan_once(
-    project: "SlideProject", deck_id: Optional[int] = None, force: bool = False
+    project: "SlideProject", deck_id: Optional[int] = None, force: bool = False,
+    stop_event: Optional[threading.Event] = None,
 ) -> None:
     """Scan the project, optionally forcing a single deck to be reindexed."""
     conn = project.conn
@@ -104,6 +106,8 @@ def _scan_once(
         target_path = target["pptx_path"]
 
     for pptx_path in _iter_pptx_files(root):
+        if stop_event and stop_event.is_set():
+            break
         rel_pptx = _rel(root, pptx_path)
         if target_path is not None and rel_pptx != target_path:
             continue
@@ -243,8 +247,8 @@ class BackgroundScanner:
                 status["last_run_started"] = time.time()
                 status["error"] = None
                 try:
-                    self.project.scan()
-                    self.project.embed_pending()
+                    self.project.scan(stop_event=self._stop_event)
+                    self.project.embed_pending(stop_event=self._stop_event)
                 except Exception as exc:  # keep the loop alive across transient errors
                     log.exception("Scan failed")
                     status["error"] = str(exc)
