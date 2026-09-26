@@ -286,7 +286,6 @@ class SlideProject:
                     "LEFT JOIN slide_image_embeddings e ON e.slide_id = s.id ORDER BY s.id"
                 ).fetchall()
             for row in rows:
-                print(f"Processing slide {row['id']} for image embedding.", stop_event)
                 if count >= limit or (stop_event is not None and stop_event.is_set()):
                     break
                 key = self._image_source_key(row["id"])
