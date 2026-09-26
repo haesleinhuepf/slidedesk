@@ -48,6 +48,7 @@
   let navigationRevision = 0;
   const canvasNode = canvas.node();
   const viewport = document.getElementById("viewport");
+  let activeListGenerationId = null;
 
   // -- zoom / pan (mouse drag, touch pinch/pan, arrow keys / WASD) ---------
   const zoomBehavior = d3
@@ -1064,27 +1065,72 @@
   async function generateAdvancedList() {
     const prompt = document.getElementById("advanced-search-prompt").value.trim();
     const button = document.getElementById("advanced-generate-list-btn");
+    const cancelButton = document.getElementById("advanced-cancel-generation-btn");
     const status = document.getElementById("advanced-search-status");
     if (!prompt) {
       status.textContent = "Enter a prompt first.";
       return;
     }
+    const generationId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    activeListGenerationId = generationId;
     button.disabled = true;
+    cancelButton.hidden = false;
     status.textContent = "Generating list…";
+    const list = document.getElementById("advanced-search-list");
+    list.value = "";
     try {
-      const res = await fetch("/api/search/advanced/generate-list", {
+      const res = await fetch("/api/search/advanced/generate-list/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, generation_id: generationId }),
       });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || "List generation failed");
-      document.getElementById("advanced-search-list").value = data.list;
-      status.textContent = "List ready to edit.";
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "List generation failed");
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = "";
+      let wasCancelled = false;
+      while (true) {
+        const { value, done } = await reader.read();
+        pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const lines = pending.split("\n");
+        pending = lines.pop();
+        for (const line of lines) {
+          if (!line) continue;
+          const event = JSON.parse(line);
+          if (event.error) throw new Error(event.error);
+          if (event.text) {
+            list.value += event.text;
+            list.scrollTop = list.scrollHeight;
+          }
+          if (event.cancelled) wasCancelled = true;
+        }
+        if (done) break;
+      }
+      status.textContent = wasCancelled ? "Generation cancelled." : "List ready to edit.";
     } catch (error) {
       status.textContent = error.message;
     } finally {
+      activeListGenerationId = null;
       button.disabled = false;
+      cancelButton.hidden = true;
+    }
+  }
+
+  async function cancelAdvancedListGeneration() {
+    if (!activeListGenerationId) return;
+    const generationId = activeListGenerationId;
+    document.getElementById("advanced-search-status").textContent = "Cancelling generation…";
+    try {
+      await fetch("/api/search/advanced/generate-list/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generation_id: generationId }),
+      });
+    } catch (error) {
+      document.getElementById("advanced-search-status").textContent = error.message;
     }
   }
 
@@ -1188,6 +1234,8 @@
     document.getElementById("advanced-search-dialog").showModal();
   });
   document.getElementById("advanced-generate-list-btn").addEventListener("click", generateAdvancedList);
+  document.getElementById("advanced-cancel-generation-btn").addEventListener("click", cancelAdvancedListGeneration);
+  document.getElementById("advanced-search-dialog").addEventListener("close", cancelAdvancedListGeneration);
   document.getElementById("advanced-generate-btn").addEventListener("click", runAdvancedSearch);
 
   document.getElementById("search-box").addEventListener("keydown", (event) => {

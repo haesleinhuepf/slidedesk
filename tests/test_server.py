@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from slidedesk import SlideProject
@@ -85,6 +87,35 @@ def test_advanced_search_generation_endpoint(indexed_project, monkeypatch):
     assert response.status_code == 200
     assert response.get_json() == {"list": "- List slides about AI"}
     assert client.post("/api/search/advanced/generate-list", json={}).status_code == 400
+
+
+def test_advanced_search_generation_stream_endpoint(indexed_project, monkeypatch):
+    from slidedesk import text_generation
+
+    def generate(prompt, cancel_event):
+        assert prompt == "List slides about AI"
+        assert not cancel_event.is_set()
+        yield "- Intro"
+        yield "\n- Methods"
+
+    monkeypatch.setattr(text_generation, "generate_list_stream", generate)
+    client = create_app(indexed_project).test_client()
+
+    response = client.post(
+        "/api/search/advanced/generate-list/stream",
+        json={"prompt": "List slides about AI", "generation_id": "test-generation"},
+        buffered=False,
+    )
+    first_event = json.loads(next(response.response))
+    cancel_response = client.post(
+        "/api/search/advanced/generate-list/cancel", json={"generation_id": "test-generation"}
+    )
+    remaining_events = [json.loads(line) for line in response.response]
+    assert response.status_code == 200
+    assert first_event == {"text": "- Intro"}
+    assert remaining_events == [{"cancelled": True, "done": True}]
+    assert cancel_response.get_json() == {"ok": True, "cancelled": True}
+    assert client.post("/api/search/advanced/generate-list/stream", json={"prompt": "test"}).status_code == 400
 
 
 def test_advanced_semantic_search_preserves_rank_and_validates_limit(indexed_project, monkeypatch):

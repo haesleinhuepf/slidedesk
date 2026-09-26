@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from queue import Empty
 
 from .embeddings import get_device
 
@@ -20,6 +21,103 @@ _model_cache = None
 
 class TextGenerationError(RuntimeError):
     """Raised when the local text-generation model cannot produce an answer."""
+
+
+def generate_list_stream(prompt: str, cancel_event: threading.Event):
+    """Yield generated text chunks until generation completes or is cancelled."""
+    try:
+        import torch
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            StoppingCriteria,
+            StoppingCriteriaList,
+            TextIteratorStreamer,
+        )
+    except ImportError as exc:
+        print("Error:", exc)
+        import traceback
+        traceback.print_exc()
+        raise TextGenerationError(
+            "The 'torch' and 'transformers' packages are required for text generation"
+        ) from exc
+
+    global _model_cache
+    try:
+        device = get_device()
+        with _model_lock:
+            if cancel_event.is_set():
+                return
+            if _model_cache is None:
+                tokenizer = AutoTokenizer.from_pretrained(MODEL)
+                model = AutoModelForCausalLM.from_pretrained(
+                    MODEL, dtype=torch.float32, low_cpu_mem_usage=False
+                )
+                model.to(device)
+                model.eval()
+                _model_cache = (tokenizer, model)
+            if cancel_event.is_set():
+                return
+            tokenizer, model = _model_cache
+            conversation = tokenizer.apply_chat_template(
+                [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            inputs = tokenizer(conversation, return_tensors="pt")
+            inputs = {
+                key: value.to(device) if hasattr(value, "to") else value
+                for key, value in inputs.items()
+            }
+            streamer = TextIteratorStreamer(
+                tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=0.1
+            )
+
+            class StopOnCancel(StoppingCriteria):
+                def __call__(self, input_ids, scores, **kwargs):
+                    return cancel_event.is_set()
+
+            errors = []
+
+            def run_generation():
+                try:
+                    with torch.inference_mode():
+                        model.generate(
+                            **inputs,
+                            streamer=streamer,
+                            stopping_criteria=StoppingCriteriaList([StopOnCancel()]),
+                            max_new_tokens=512,
+                            do_sample=False,
+                            **({"pad_token_id": tokenizer.eos_token_id}
+                               if tokenizer.eos_token_id is not None else {}),
+                        )
+                except Exception as exc:
+                    errors.append(exc)
+                    streamer.end()
+
+            worker = threading.Thread(target=run_generation, daemon=True)
+            worker.start()
+            try:
+                while True:
+                    try:
+                        chunk = next(streamer)
+                    except Empty:
+                        if not worker.is_alive():
+                            break
+                        continue
+                    if chunk and not cancel_event.is_set():
+                        yield chunk
+            finally:
+                worker.join()
+            if errors:
+                raise errors[0]
+    except TextGenerationError:
+        raise
+    except Exception as exc:
+        raise TextGenerationError(f"Text generation failed: {exc}") from exc
 
 
 def generate_list(prompt: str) -> str:

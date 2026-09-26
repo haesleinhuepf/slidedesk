@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import io
+import json
+import threading
+import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_file, render_template
+from flask import Flask, Response, jsonify, request, send_file, render_template, stream_with_context
 
 from .. import convert, embeddings, text_generation
 from ..project import SlideProject
@@ -17,6 +20,8 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
         template_folder=str(Path(__file__).parent / "templates"),
     )
     app.config["JSON_SORT_KEYS"] = False
+    generation_events = {}
+    generation_events_lock = threading.Lock()
 
     def deck_file_exists(deck):
         return deck is not None and (project.folder / deck.pptx_path).is_file()
@@ -152,6 +157,48 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
             return jsonify({"list": text_generation.generate_list(prompt.strip())})
         except text_generation.TextGenerationError as exc:
             return jsonify({"error": str(exc)}), 502
+
+    @app.post("/api/search/advanced/generate-list/stream")
+    def api_advanced_search_generate_list_stream():
+        body = request.get_json(silent=True)
+        prompt = body.get("prompt") if isinstance(body, dict) else None
+        generation_id = body.get("generation_id") if isinstance(body, dict) else None
+        if not isinstance(prompt, str) or not prompt.strip():
+            return jsonify({"error": "prompt must be a non-empty string"}), 400
+        if not isinstance(generation_id, str) or not generation_id:
+            return jsonify({"error": "generation_id must be a non-empty string"}), 400
+        cancel_event = threading.Event()
+        with generation_events_lock:
+            generation_events[generation_id] = cancel_event
+
+        @stream_with_context
+        def generate_events():
+            try:
+                for chunk in text_generation.generate_list_stream(prompt.strip(), cancel_event):
+                    if cancel_event.is_set():
+                        break
+                    yield json.dumps({"text": chunk}) + "\n"
+                yield json.dumps({"cancelled": cancel_event.is_set(), "done": True}) + "\n"
+            except text_generation.TextGenerationError as exc:
+                yield json.dumps({"error": str(exc), "done": True}) + "\n"
+            finally:
+                cancel_event.set()
+                with generation_events_lock:
+                    generation_events.pop(generation_id, None)
+
+        return Response(generate_events(), mimetype="application/x-ndjson")
+
+    @app.post("/api/search/advanced/generate-list/cancel")
+    def api_advanced_search_cancel_generation():
+        body = request.get_json(silent=True)
+        generation_id = body.get("generation_id") if isinstance(body, dict) else None
+        if not isinstance(generation_id, str) or not generation_id:
+            return jsonify({"error": "generation_id must be a non-empty string"}), 400
+        with generation_events_lock:
+            cancel_event = generation_events.get(generation_id)
+        if cancel_event is not None:
+            cancel_event.set()
+        return jsonify({"ok": True, "cancelled": cancel_event is not None})
 
     @app.post("/api/search/advanced/semantic")
     def api_advanced_search_semantic():
