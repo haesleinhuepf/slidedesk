@@ -7,26 +7,17 @@ and build slide deck efficiently.
 
 ## Install
 
+It is recommended to install SlideDesk in a [conda-forge](https://conda-forge.org/download/) environment.
+
 ```bash
 pip install slidedesk
 ```
 
-After updating from slidedeck, run this command again to install the `slidedesk`
-command. Python imports now use `slidedesk`. Existing projects keep using
-`slidedesk.db` so saved data remains available.
+### Additional requirements
 
-Generated PDFs and slide images are stored in `.slidedesk/_cache`. PDF exports
-mirror the source folder hierarchy: `talks/deck.pptx` produces
-`.slidedesk/_cache/talks/deck.pdf` and
-`.slidedesk/_cache/talks/deck.hidden.pdf`. Existing indexed PDF sidecars are moved
-into this cache on the next scan.
-
-Requires Microsoft PowerPoint installed and only works on Windows.
-
-Requires [Poppler](https://poppler.freedesktop.org/) (`pdftoppm`/`pdfinfo` on PATH,
-used by `pdf2image` to render slide images from PDFs) and, on Windows, a local
-install of Microsoft PowerPoint (used via COM automation/`pywin32` to export
-`.pptx` to `.pdf`):
+* Works on Windows only
+* Requires Microsoft PowerPoint installed
+* Requires [Poppler](https://poppler.freedesktop.org/). You can install poppler like this
 
 ```
 conda install poppler
@@ -36,6 +27,15 @@ conda install poppler
 
 ```bash
 slidedesk /path/to/folder
+```
+
+**Note:** If you run this for the first time on a folder that contains many slide decks, 
+the initial scan will take hours. You will slide decks once they are scanned and a progress bar in the top right corner shows how far scanning and embedding are done.
+
+Alternatively, navigate to the folder and run SlideDesk from there:
+```bash
+cd /path/to/folder
+slidedesk .
 ```
 
 This creates (or opens) a `.slidedesk/slidedesk.db` SQLite project file inside the folder,
@@ -50,7 +50,7 @@ changes or new decks:
 slidedesk /path/to/folder --no-scan
 ```
 
-This disables startup and recurring folder scans, including the scan API.
+This disables startup and recurring folder scans.
 The background embedding worker is also stopped in this mode. You can still
 explicitly refresh an individual indexed deck from the GUI.
 
@@ -59,30 +59,27 @@ explicitly refresh an individual indexed deck from the GUI.
 SlideDesk downloads models from Hugging Face on first use, to run them locally
 Hence, it does not need an API key or an OpenAI-compatible server.
 
-Slide texts are embedded using the [intfloat/multilingual-e5-large-instruct](https://huggingface.co/intfloat/multilingual-e5-large-instruct) model. Thanks to this, you can search for terms 
+* Slide texts are embedded using the [intfloat/multilingual-e5-large-instruct](https://huggingface.co/intfloat/multilingual-e5-large-instruct) model. Thanks to this, you can search for terms 
 such as "image filtering" and it may find slides about "image processsing", too.
 
-Slide images are embedded locally with [openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32). 
+* Slide images are embedded locally with [openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32). 
 
 The background worker stores vectors in `slidedesk.db`. 
-This includes hidden slides and slides without text once their PDF exports are
-available. Changed slides or PDF exports are embedded again automatically.
 
 “Show similar slides” presents one list: visual matches first, followed by
 additional text matches, excluding duplicates. Either cache
 can supply results while the other is still being built or unavailable.
 
-Exports are saved in a temporary directory and served for download. 
-They are later removed automatically.
+## Similar projects
 
-## GUI features
+* [SlideFlow](https://github.com/michaelseliger/slideflow)
+* [pptx-automizer](https://github.com/singerla/pptx-automizer)
 
-- Grid of slide decks (one row per `.pptx`/`.pdf`/`.hidden.pdf` tuple), first slide
-  shown as a thumbnail.
-- Click a slide to reveal the rest of the deck's slides to the right.
-- Search box: press Enter to find all slides containing the given text.
-- Right-click or hold a slide for actions: zoom to slide, add to selection, show in deck, or show similar.
-- "Export selection" button saves selected slides into a new `.pptx`.
-- Toggle to show/hide hidden slides.
-- Touch support: two-finger pinch to zoom, drag background to pan.
-- Arrow keys or WASD pan the view; hold Shift to pan four times faster.
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. Note: Large parts of the code in this repository was vibe-coded using GitHub Copilot integration in Visual Studio Code. When modifying code here, consider using a similar tool.
+
+## Acknowledgements
+
+We acknowledge the financial support by the Federal Ministry of Research, Technology and Space of Germany and by Sächsische Staatsministerium für Wissenschaft, Kultur und Tourismus in the programme Center of Excellence for AI-research „Center for Scalable Data Analytics and Artificial Intelligence Dresden/Leipzig“, project identification number: ScaDS.AI
+
