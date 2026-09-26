@@ -3,7 +3,9 @@
 SlideDesk indexes a folder full of `.pptx` files (and sub-folders), 
 allowing you to browse everything in a touch-friendly browser GUI.
 It also has a similarity search, allowing you to rediscover slides 
-and build slide deck efficiently.
+and build slide decks efficiently.
+
+![]()
 
 ## Install
 
@@ -30,7 +32,7 @@ slidedesk /path/to/folder
 ```
 
 **Note:** If you run this for the first time on a folder that contains many slide decks, 
-the initial scan will take hours. You will slide decks once they are scanned and a progress bar in the top right corner shows how far scanning and embedding are done.
+the initial scan may take hours depending on your computer. You will slide decks once they are scanned and a progress bar in the top right corner shows how far scanning and embedding are done.
 
 Alternatively, navigate to the folder and run SlideDesk from there:
 ```bash
