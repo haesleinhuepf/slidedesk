@@ -66,20 +66,23 @@ such as "image filtering" and it may find slides about "image processsing", too.
 
 * Slide images are embedded locally with [openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32). 
 
+* Advanced Search generates editable slide outlines locally with [ibm-granite/granite-4.1-3b](https://huggingface.co/ibm-granite/granite-4.1-3b). The model is downloaded on first use.
+
 The background worker stores vectors in `slidedesk.db`. 
 
 “Show similar slides” presents one list: visual matches first, followed by
 additional text matches, excluding duplicates. Either cache
 can supply results while the other is still being built or unavailable.
 
-## Similar projects
+## Similar and related projects
 
 * [SlideFlow](https://github.com/michaelseliger/slideflow)
+* [SlideInsight](https://github.com/NFDI4BIOIMAGE/SlideInsight)
 * [pptx-automizer](https://github.com/singerla/pptx-automizer)
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. Note: Large parts of the code in this repository was vibe-coded using GitHub Copilot integration in Visual Studio Code. When modifying code here, consider using a similar tool.
+Contributions are welcome! Please feel free to submit a Pull Request. Note: Large parts of the code in this repository were vibe-coded using GitHub Copilot integration in Visual Studio Code. When modifying code here, consider using a similar tool.
 
 ## Acknowledgements
 

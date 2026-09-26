@@ -28,6 +28,7 @@
       <option value="semantic">Semantic search (AI)</option>
     </select>
     <button id="search-btn" type="button">Search</button>
+    <button id="advanced-search-btn" type="button">Advanced Search</button>
     <label class="toggle">
       <input id="toggle-hidden" type="checkbox" />
       Show hidden slides
@@ -66,6 +67,26 @@
     <button id="menu-toggle-deck-hidden">Hide slide deck</button>
     <button id="menu-remove" hidden>Remove slide</button>
   </div>
+
+  <dialog id="advanced-search-dialog" aria-labelledby="advanced-search-title">
+    <form method="dialog" class="advanced-search-header">
+      <h2 id="advanced-search-title">Advanced Search</h2>
+      <button id="advanced-search-close" type="submit" aria-label="Close">×</button>
+    </form>
+    <label for="advanced-search-prompt">Prompt</label>
+    <textarea id="advanced-search-prompt" rows="3">List 20 slides about ...</textarea>
+    <div class="advanced-search-actions">
+      <button id="advanced-generate-list-btn" type="button">Generate List</button>
+      <span id="advanced-search-status" role="status" aria-live="polite"></span>
+    </div>
+    <label for="advanced-search-list">Slide topics</label>
+    <textarea id="advanced-search-list" rows="15" placeholder="Generated bullet points will appear here. You can edit them before searching."></textarea>
+    <div class="advanced-search-footer">
+      <label for="advanced-slides-per-topic">Slides per bullet point</label>
+      <input id="advanced-slides-per-topic" type="number" min="1" max="50" step="1" value="2" />
+      <button id="advanced-generate-btn" type="button">Generate</button>
+    </div>
+  </dialog>
 
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>

@@ -68,3 +68,47 @@ def test_similar_slides_exclude_missing_files(indexed_project, monkeypatch):
     assert [s["id"] for s in response.get_json()] == [source.id]
     (project.folder / available.pptx_path).unlink()
     assert client.get(f"/api/slides/{source.id}/similar").status_code == 404
+
+
+def test_advanced_search_generation_endpoint(indexed_project, monkeypatch):
+    from slidedesk import text_generation
+
+    generate = monkeypatch.setattr(
+        text_generation, "generate_list", lambda prompt: f"- {prompt}"
+    )
+    client = create_app(indexed_project).test_client()
+
+    response = client.post(
+        "/api/search/advanced/generate-list", json={"prompt": "List slides about AI"}
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"list": "- List slides about AI"}
+    assert client.post("/api/search/advanced/generate-list", json={}).status_code == 400
+
+
+def test_advanced_semantic_search_preserves_rank_and_validates_limit(indexed_project, monkeypatch):
+    project = indexed_project
+    slides = project.search("match")
+    (project.folder / "missing.pptx").touch()
+    (project.folder / "directory.pptx").rmdir()
+    (project.folder / "directory.pptx").touch()
+    requested = []
+
+    def search(query, top_k):
+        requested.append((query, top_k))
+        return list(reversed(slides))[:top_k]
+
+    monkeypatch.setattr(project, "search_semantic", search)
+    client = create_app(project).test_client()
+
+    response = client.post(
+        "/api/search/advanced/semantic", json={"query": "intro", "top_k": 2}
+    )
+
+    assert response.status_code == 200
+    assert [slide["id"] for slide in response.get_json()] == [s.id for s in reversed(slides)][:2]
+    assert requested == [("intro", 2)]
+    assert client.post(
+        "/api/search/advanced/semantic", json={"query": "intro", "top_k": True}
+    ).status_code == 400

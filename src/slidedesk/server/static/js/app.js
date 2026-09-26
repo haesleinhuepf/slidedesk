@@ -33,6 +33,7 @@
     mode: "pool", // "pool" | "search" | "deck" | "similar"
     searchQuery: "",
     searchMode: "keyword",
+    advancedSearch: false,
     searchOrder: [], // slide ids, relevance order (search mode)
     matchedSlideIds: new Set(),
     focusDeckId: null,
@@ -387,6 +388,7 @@
       mode: state.mode,
       searchQuery: state.searchQuery,
       searchMode: state.searchMode,
+      advancedSearch: state.advancedSearch,
       searchOrder: [...state.searchOrder],
       matchedSlideIds: new Set(state.matchedSlideIds),
       focusDeckId: state.focusDeckId,
@@ -409,6 +411,7 @@
   }
 
   function locationLabel(location) {
+    if (location.mode === "search" && location.advancedSearch) return `Advanced search (${location.searchOrder.length} slides)`;
     if (location.mode === "search") return `Search for "${location.searchQuery}"${location.searchMode === "semantic" ? " (AI)" : ""}`;
     if (location.mode === "deck") return state.deckById.get(location.focusDeckId)?.name || "Slide deck";
     if (location.mode === "similar") {
@@ -1042,12 +1045,100 @@
     saveLocation();
     state.searchQuery = query;
     state.searchMode = mode;
+    state.advancedSearch = false;
+    state.advancedSearch = false;
     state.searchOrder = order;
     state.matchedSlideIds = matched;
     state.mode = "search";
     recordLocation();
     render();
     fitView();
+  }
+
+  function advancedSearchTopics(text) {
+    return text.split(/\r?\n/)
+      .map((line) => line.trim().replace(/^(?:[-*•]+|\d+[.)])\s*/, "").trim())
+      .filter(Boolean);
+  }
+
+  async function generateAdvancedList() {
+    const prompt = document.getElementById("advanced-search-prompt").value.trim();
+    const button = document.getElementById("advanced-generate-list-btn");
+    const status = document.getElementById("advanced-search-status");
+    if (!prompt) {
+      status.textContent = "Enter a prompt first.";
+      return;
+    }
+    button.disabled = true;
+    status.textContent = "Generating list…";
+    try {
+      const res = await fetch("/api/search/advanced/generate-list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || "List generation failed");
+      document.getElementById("advanced-search-list").value = data.list;
+      status.textContent = "List ready to edit.";
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function runAdvancedSearch() {
+    const topics = advancedSearchTopics(document.getElementById("advanced-search-list").value);
+    const perTopic = Number(document.getElementById("advanced-slides-per-topic").value);
+    const dialog = document.getElementById("advanced-search-dialog");
+    if (!topics.length) {
+      document.getElementById("advanced-search-status").textContent = "Enter at least one bullet point.";
+      return;
+    }
+    if (!Number.isInteger(perTopic) || perTopic < 1 || perTopic > 50) {
+      document.getElementById("advanced-search-status").textContent = "Choose between 1 and 50 slides per bullet point.";
+      return;
+    }
+
+    const revision = ++navigationRevision;
+    saveLocation();
+    state.searchQuery = "Advanced Search";
+    state.searchMode = "semantic";
+    state.advancedSearch = true;
+    state.searchOrder = [];
+    state.matchedSlideIds = new Set();
+    state.mode = "search";
+    recordLocation();
+    render();
+    fitView();
+    dialog.close();
+
+    for (let index = 0; index < topics.length; index += 1) {
+      if (revision !== navigationRevision) return;
+      try {
+        const res = await fetch("/api/search/advanced/semantic", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: topics[index], top_k: perTopic }),
+        });
+        const slides = await res.json();
+        if (revision !== navigationRevision) return;
+        if (!res.ok || !Array.isArray(slides)) throw new Error(slides.error || "Semantic search failed");
+        slides.forEach((slide) => {
+          if (!state.matchedSlideIds.has(slide.id)) {
+            state.matchedSlideIds.add(slide.id);
+            state.searchOrder.push(slide.id);
+          }
+        });
+        saveLocation();
+        render();
+        fitView();
+      } catch (error) {
+        if (revision === navigationRevision) window.alert(`Advanced search failed for "${topics[index]}": ${error.message}`);
+        return;
+      }
+    }
   }
 
   // -- export --------------------------------------------------------------
@@ -1073,6 +1164,7 @@
     state.mode = "pool";
     state.searchQuery = "";
     state.searchMode = "keyword";
+    state.advancedSearch = false;
     state.searchOrder = [];
     state.matchedSlideIds = new Set();
     state.focusDeckId = null;
@@ -1090,6 +1182,13 @@
   document.getElementById("search-btn").addEventListener("click", () => {
     runSearch(document.getElementById("search-box").value);
   });
+
+  document.getElementById("advanced-search-btn").addEventListener("click", () => {
+    document.getElementById("advanced-search-status").textContent = "";
+    document.getElementById("advanced-search-dialog").showModal();
+  });
+  document.getElementById("advanced-generate-list-btn").addEventListener("click", generateAdvancedList);
+  document.getElementById("advanced-generate-btn").addEventListener("click", runAdvancedSearch);
 
   document.getElementById("search-box").addEventListener("keydown", (event) => {
     if (event.key === "Enter") runSearch(event.target.value);

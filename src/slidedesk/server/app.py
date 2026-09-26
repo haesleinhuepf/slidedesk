@@ -6,7 +6,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, render_template
 
-from .. import convert, embeddings
+from .. import convert, embeddings, text_generation
 from ..project import SlideProject
 
 
@@ -141,6 +141,37 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
         # keep decks ordered by their best-matching (highest-scored) slide
         results.sort(key=lambda d: min(rank[s["id"]] for s in d["matched_slides"]))
         return jsonify(results)
+
+    @app.post("/api/search/advanced/generate-list")
+    def api_advanced_search_generate_list():
+        body = request.get_json(silent=True)
+        prompt = body.get("prompt") if isinstance(body, dict) else None
+        if not isinstance(prompt, str) or not prompt.strip():
+            return jsonify({"error": "prompt must be a non-empty string"}), 400
+        try:
+            return jsonify({"list": text_generation.generate_list(prompt.strip())})
+        except text_generation.TextGenerationError as exc:
+            return jsonify({"error": str(exc)}), 502
+
+    @app.post("/api/search/advanced/semantic")
+    def api_advanced_search_semantic():
+        body = request.get_json(silent=True)
+        query = body.get("query") if isinstance(body, dict) else None
+        top_k = body.get("top_k", 2) if isinstance(body, dict) else 2
+        if not isinstance(query, str) or not query.strip():
+            return jsonify({"error": "query must be a non-empty string"}), 400
+        if type(top_k) is not int or not 1 <= top_k <= 50:
+            return jsonify({"error": "top_k must be an integer between 1 and 50"}), 400
+        try:
+            slides = project.search_semantic(query.strip(), top_k=top_k)
+        except embeddings.EmbeddingError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify([
+            slide_to_json(slide) for slide in slides
+            if deck_file_exists(project.deck(slide.deck_id))
+        ])
 
     @app.get("/api/slides/<int(signed=True):slide_id>/similar")
     def api_slide_similar(slide_id):
