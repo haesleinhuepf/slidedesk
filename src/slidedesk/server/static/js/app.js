@@ -22,6 +22,9 @@
   const MOVE_CANCEL_PX = 6;
   const KEY_PAN_PX = 40;
   const FAST_PAN_MULTIPLIER = 4;
+  const ZOOM_NAV_MODES = new Set(["search", "deck", "similar"]);
+  const ZOOM_NAV_THRESHOLD = 0.6; // show prev/next/selection buttons once a slide fills this much of the canvas
+  const DOUBLE_CLICK_ZOOM_FRACTION = 0.8;
 
   const state = {
     decks: [],
@@ -56,6 +59,7 @@
     .on("end", () => viewport.classList.remove("grabbing"))
     .on("zoom", (event) => {
       canvas.style("transform", `translate(${event.transform.x}px, ${event.transform.y}px) scale(${event.transform.k})`);
+      updateZoomNav(event.transform);
     });
 
   d3.select(viewport).call(zoomBehavior);
@@ -354,6 +358,7 @@
       .style("opacity", 1);
 
     updateSelectionUi();
+    updateZoomNav(d3.zoomTransform(viewport));
   }
 
   function render() {
@@ -550,10 +555,117 @@
   });
 
   canvasNode.addEventListener("dblclick", (event) => {
-    if (!event.target.closest(".slide-thumb")) return;
+    const el = event.target.closest(".slide-thumb");
+    if (!el) return;
     event.preventDefault();
-    // Slides have no double-click action, including the viewport's default zoom.
+    // Slides have no default double-click zoom; search/deck/similar zoom in on the slide instead.
     event.stopPropagation();
+    if (!ZOOM_NAV_MODES.has(state.mode)) return;
+    zoomToSlideFraction(Number(el.getAttribute("data-slide-id")), DOUBLE_CLICK_ZOOM_FRACTION);
+  });
+
+  function zoomToSlideFraction(slideId, fraction) {
+    const item = renderedItems.find((it) => it.slide.id === slideId);
+    if (!item) return;
+    const scale = Math.min(
+      (viewport.clientWidth * fraction) / SLIDE_WIDTH,
+      (viewport.clientHeight * fraction) / SLIDE_HEIGHT);
+    const target = d3.zoomIdentity
+      .translate(viewport.clientWidth / 2, viewport.clientHeight / 2)
+      .scale(scale)
+      .translate(-(item.x + SLIDE_WIDTH / 2), -(item.y + SLIDE_HEIGHT / 2));
+    d3.select(viewport).interrupt().transition().duration(300).call(zoomBehavior.transform, target);
+  }
+
+  // -- zoomed-in slide navigation overlay (prev / next / selection toggle) ---
+  const zoomNavOverlay = document.getElementById("slide-zoom-nav");
+  const zoomNavPrev = document.getElementById("zoom-nav-prev");
+  const zoomNavNext = document.getElementById("zoom-nav-next");
+  const zoomNavToggle = document.getElementById("zoom-nav-toggle");
+  let zoomNavSlideId = null;
+
+  function hideZoomNav() {
+    zoomNavSlideId = null;
+    zoomNavOverlay.classList.add("hidden");
+  }
+
+  function updateZoomNav(transform) {
+    if (!ZOOM_NAV_MODES.has(state.mode) || !renderedItems.length) {
+      hideZoomNav();
+      return;
+    }
+    const widthFrac = (SLIDE_WIDTH * transform.k) / viewport.clientWidth;
+    const heightFrac = (SLIDE_HEIGHT * transform.k) / viewport.clientHeight;
+    if (Math.max(widthFrac, heightFrac) <= ZOOM_NAV_THRESHOLD) {
+      hideZoomNav();
+      return;
+    }
+    const centerX = (viewport.clientWidth / 2 - transform.x) / transform.k;
+    const centerY = (viewport.clientHeight / 2 - transform.y) / transform.k;
+    let active = null;
+    let bestDist = Infinity;
+    renderedItems.forEach((item) => {
+      const dist = Math.hypot(item.x + SLIDE_WIDTH / 2 - centerX, item.y + SLIDE_HEIGHT / 2 - centerY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        active = item;
+      }
+    });
+    if (!active) {
+      hideZoomNav();
+      return;
+    }
+    // Only show the overlay while the closest slide is actually on screen.
+    const screenCenterX = transform.x + (active.x + SLIDE_WIDTH / 2) * transform.k;
+    const screenCenterY = transform.y + (active.y + SLIDE_HEIGHT / 2) * transform.k;
+    if (screenCenterX < 0 || screenCenterX > viewport.clientWidth || screenCenterY < 0 || screenCenterY > viewport.clientHeight) {
+      hideZoomNav();
+      return;
+    }
+    zoomNavSlideId = active.slide.id;
+    zoomNavOverlay.style.left = `${transform.x + active.x * transform.k}px`;
+    zoomNavOverlay.style.top = `${transform.y + active.y * transform.k}px`;
+    zoomNavOverlay.style.width = `${SLIDE_WIDTH * transform.k}px`;
+    zoomNavOverlay.style.height = `${SLIDE_HEIGHT * transform.k}px`;
+    const index = renderedItems.indexOf(active);
+    zoomNavPrev.disabled = index <= 0;
+    zoomNavNext.disabled = index === -1 || index >= renderedItems.length - 1;
+    const selected = state.selection.has(zoomNavSlideId);
+    zoomNavToggle.textContent = selected ? "−" : "+";
+    zoomNavToggle.setAttribute("aria-label", selected ? "Remove from selection" : "Add to selection");
+    zoomNavOverlay.classList.remove("hidden");
+  }
+
+  // Pan so the previous/next slide in the current list takes the on-screen
+  // position of the currently zoomed slide, keeping the same zoom level.
+  function navigateZoomNav(direction) {
+    if (zoomNavSlideId == null) return;
+    const index = renderedItems.findIndex((it) => it.slide.id === zoomNavSlideId);
+    const nextIndex = index + direction;
+    if (index === -1 || nextIndex < 0 || nextIndex >= renderedItems.length) return;
+    const current = renderedItems[index];
+    const next = renderedItems[nextIndex];
+    const t = d3.zoomTransform(viewport);
+    const screenX = t.x + current.x * t.k;
+    const screenY = t.y + current.y * t.k;
+    const target = d3.zoomIdentity
+      .translate(screenX - next.x * t.k, screenY - next.y * t.k)
+      .scale(t.k);
+    state.focusSlideId = next.slide.id;
+    d3.select(viewport).interrupt().transition().duration(250).call(zoomBehavior.transform, target);
+  }
+
+  zoomNavPrev.addEventListener("click", (event) => {
+    event.stopPropagation();
+    navigateZoomNav(-1);
+  });
+  zoomNavNext.addEventListener("click", (event) => {
+    event.stopPropagation();
+    navigateZoomNav(1);
+  });
+  zoomNavToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (zoomNavSlideId != null) toggleSelection(zoomNavSlideId);
   });
 
   function onSlideClick(slideId, el) {
@@ -578,6 +690,7 @@
     }
     canvas.selectAll(".slide-thumb").attr("class", thumbClasses);
     updateSelectionUi();
+    updateZoomNav(d3.zoomTransform(viewport));
   }
 
   function updateSelectionUi() {

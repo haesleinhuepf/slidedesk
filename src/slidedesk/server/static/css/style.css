@@ -140,6 +140,37 @@ button:not(:disabled):hover { border-color: var(--accent); }
   transform-origin: 0 0;
 }
 
+#slide-zoom-nav {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+#slide-zoom-nav.hidden { display: none; }
+#slide-zoom-nav button {
+  position: absolute;
+  pointer-events: auto;
+  width: 90px;
+  height: 90px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 54px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+#slide-zoom-nav button:not(:disabled):hover { background: rgba(0, 0, 0, 0.7); }
+#slide-zoom-nav button:disabled { opacity: 0.3; cursor: default; }
+#zoom-nav-prev { left: 12px; top: 50%; transform: translateY(-50%); }
+#zoom-nav-next { right: 12px; top: 50%; transform: translateY(-50%); }
+#zoom-nav-toggle { right: 12px; bottom: 12px; font-size: 60px; }
+#zoom-nav-toggle { right: 12px; bottom: 12px; font-size: 20px; }
+
 #view-breadcrumb {
   position: fixed;
   top: 52px; left: 0; right: var(--selection-width);
