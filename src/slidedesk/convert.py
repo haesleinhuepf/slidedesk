@@ -117,5 +117,68 @@ def convert_pptx_to_pdf(pptx_path: Path, out_pdf_path: Path, timeout: int = 180)
         raise ConversionError(f"PowerPoint did not produce {out_pdf_path}")
 
 
+def _copy_to_clipboard(pptx_path: Path, do_copy) -> None:
+    """Open `pptx_path` in a visible PowerPoint window and run `do_copy(presentation)`,
+    which is expected to call `.Copy()` on some slide selection to populate the clipboard.
+    """
+    if platform.system() != "Windows":
+        raise ConversionError("Copying slides to the clipboard requires Microsoft PowerPoint on Windows.")
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise ConversionError("pywin32 is required to copy slides to the clipboard.") from exc
+
+    pptx_path = pptx_path.resolve()
+    presentation = None
+    pythoncom.CoInitialize()
+    try:
+        try:
+            app = win32com.client.DispatchEx("PowerPoint.Application")
+            _retain_app(app)
+            app.DisplayAlerts = 2  # ppAlertsNone
+            app.Visible = True  # PowerPoint needs a window to populate the clipboard
+            presentation = app.Presentations.Open(
+                str(pptx_path), ReadOnly=True, Untitled=False, WithWindow=True
+            )
+            do_copy(presentation)
+        finally:
+            if presentation is not None:
+                presentation.Close()
+    except ConversionError:
+        pythoncom.CoUninitialize()
+        raise
+    except Exception as exc:
+        pythoncom.CoUninitialize()
+        raise ConversionError(f"PowerPoint failed to copy slides from {pptx_path.name}: {exc}") from exc
+    pythoncom.CoUninitialize()
+
+
+def copy_slide_to_clipboard(pptx_path: Path, index_in_deck: int) -> None:
+    """Copy one slide from `pptx_path` onto the OS clipboard via PowerPoint's
+    native `Slide.Copy()`, so it can be pasted directly into another open
+    PowerPoint presentation. Requires a visible PowerPoint window on Windows.
+    """
+    def do_copy(presentation):
+        slide_number = index_in_deck + 1
+        if not (1 <= slide_number <= presentation.Slides.Count):
+            raise ConversionError(f"Slide index {index_in_deck} out of range for {pptx_path.name}")
+        presentation.Slides(slide_number).Copy()
+
+    _copy_to_clipboard(pptx_path, do_copy)
+
+
+def copy_slides_to_clipboard(pptx_path: Path) -> None:
+    """Copy every slide in `pptx_path` onto the OS clipboard as a single
+    multi-slide `SlideRange.Copy()`, so the whole set can be pasted together.
+    """
+    def do_copy(presentation):
+        if presentation.Slides.Count == 0:
+            raise ConversionError("No slides to copy")
+        presentation.Slides.Range().Copy()
+
+    _copy_to_clipboard(pptx_path, do_copy)
+
+
 def shutdown() -> None:
     """Compatibility hook; PowerPoint instances are intentionally left open."""

@@ -486,6 +486,16 @@
     fitView(clickedPosition);
   }
 
+  async function copySlideToClipboard(slideId) {
+    try {
+      const res = await fetch(`/api/slides/${slideId}/copy`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || "Copy failed");
+    } catch (error) {
+      window.alert("Could not copy slide: " + error.message);
+    }
+  }
+
   function startSimilarSimulation(sourceSlide, similarSlides) {
     if (state.simulation) state.simulation.stop();
 
@@ -704,6 +714,7 @@
     const count = state.selection.size;
     document.getElementById("selection-count").textContent = `${count} selected`;
     document.getElementById("export-btn").disabled = count === 0;
+    document.getElementById("copy-selection-btn").disabled = count === 0;
     document.getElementById("clear-selection-btn").disabled = count === 0;
     renderSelectionBar();
   }
@@ -870,6 +881,7 @@
     menu.dataset.source = selectionList.contains(el) ? "selection" : "canvas";
     const { slide, deck } = state.slidesById.get(Number(menu.dataset.slideId));
     document.getElementById("menu-show-in-deck").disabled = state.mode === "deck";
+    document.getElementById("menu-copy-slide").hidden = state.mode === "pool";
     document.getElementById("menu-toggle-slide-hidden").hidden = state.mode === "pool";
     document.getElementById("menu-toggle-deck-hidden").hidden = state.mode !== "pool";
     document.getElementById("menu-toggle-slide-hidden").textContent = slide.hidden ? "Unhide slide" : "Hide slide";
@@ -958,6 +970,12 @@
     const slideId = Number(menu.dataset.slideId);
     const el = contextSlideElement(menu, slideId);
     if (el) showSimilar(slideId, el);
+  });
+
+  document.getElementById("menu-copy-slide").addEventListener("click", () => {
+    const slideId = Number(document.getElementById("slide-context-menu").dataset.slideId);
+    hideContextMenu();
+    copySlideToClipboard(slideId);
   });
 
   document.addEventListener("click", (event) => {
@@ -1202,6 +1220,16 @@
     window.location = `/api/export/${encodeURIComponent(data.path)}/download`;
   }
 
+  async function copySelection() {
+    const res = await fetch("/api/copy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slide_ids: Array.from(state.selection) }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) window.alert("Copy failed: " + (data.error || "unknown error"));
+  }
+
   // -- wiring ----------------------------------------------------------------
   document.getElementById("exit-btn").addEventListener("click", async () => {
     if (!window.confirm("Exit SlideDesk? This will stop the server.")) return;
@@ -1265,6 +1293,7 @@
   });
 
   document.getElementById("export-btn").addEventListener("click", exportSelection);
+  document.getElementById("copy-selection-btn").addEventListener("click", copySelection);
 
   document.getElementById("clear-selection-btn").addEventListener("click", () => {
     state.selection.clear();

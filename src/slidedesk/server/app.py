@@ -99,6 +99,16 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
             return jsonify({"error": "slide not found"}), 404
         return jsonify({"ok": True})
 
+    @app.post("/api/slides/<int(signed=True):slide_id>/copy")
+    def api_slide_copy(slide_id):
+        try:
+            project.copy_slide_to_clipboard(slide_id)
+        except KeyError:
+            return jsonify({"error": "slide not found"}), 404
+        except convert.ConversionError as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True})
+
     @app.patch("/api/decks/<int(signed=True):deck_id>/slides/hidden")
     def api_deck_slides_hidden(deck_id):
         body = request.get_json(silent=True)
@@ -295,6 +305,18 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
         except convert.ConversionError as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True, "path": out_path.name})
+
+    @app.post("/api/copy")
+    def api_copy():
+        body = request.get_json(force=True, silent=True) or {}
+        slide_ids = body.get("slide_ids") or []
+        try:
+            project.copy_selection_to_clipboard([int(i) for i in slide_ids])
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except convert.ConversionError as exc:
+            return jsonify({"error": str(exc)}), 502
+        return jsonify({"ok": True})
 
     @app.get("/api/export/<path:filename>/download")
     def api_export_download(filename):

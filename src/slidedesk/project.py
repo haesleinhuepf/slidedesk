@@ -409,16 +409,18 @@ class SlideProject:
             raise KeyError(f"No such slide: {slide_id}")
         return slide.text
 
-    # -- export -----------------------------------------------------------
-    def export_selection(self, slide_ids: List[int], out_filename: Optional[str] = None) -> Path:
-        """Copy the given slides (by id, in the given order) into a new .pptx
-        saved in a temporary folder, returning its path. Exports remain available
-        until the project is closed. By default, filenames are numbered starting
-        at export_1.pptx for each project session.
-        """
-        if not slide_ids:
-            raise ValueError("No slides selected for export")
+    def copy_slide_to_clipboard(self, slide_id: int) -> None:
+        """Copy one slide onto the OS clipboard via PowerPoint COM automation (Windows only)."""
+        slide = self.slide(slide_id)
+        if slide is None:
+            raise KeyError(f"No such slide: {slide_id}")
+        deck = self.deck(slide.deck_id)
+        if deck is None:
+            raise KeyError(f"No such deck: {slide.deck_id}")
+        convert.copy_slide_to_clipboard(self.folder / deck.pptx_path, slide.index_in_deck)
 
+    def _selection_pairs(self, slide_ids: List[int]) -> tuple:
+        """Resolve slide ids to (pptx_path, index_in_deck) pairs, plus a template deck path."""
         pairs = []
         template_path: Optional[Path] = None
         for slide_id in slide_ids:
@@ -433,6 +435,33 @@ class SlideProject:
 
         if not pairs or template_path is None:
             raise ValueError("None of the given slide ids exist")
+        return pairs, template_path
+
+    def copy_selection_to_clipboard(self, slide_ids: List[int]) -> None:
+        """Copy multiple slides (by id, in order) onto the OS clipboard as one
+        multi-slide paste, via a temporary .pptx built the same way as export.
+        """
+        if not slide_ids:
+            raise ValueError("No slides selected to copy")
+        pairs, template_path = self._selection_pairs(slide_ids)
+        with tempfile.TemporaryDirectory(prefix="slidedesk-clipboard-") as staging:
+            source = Path(staging) / "source.pptx"
+            repaired = Path(staging) / "repaired.pptx"
+            pptx_tools.save_selection_as_pptx(pairs, template_path, source)
+            convert.repair_pptx(source, repaired)
+            convert.copy_slides_to_clipboard(repaired)
+
+    # -- export -----------------------------------------------------------
+    def export_selection(self, slide_ids: List[int], out_filename: Optional[str] = None) -> Path:
+        """Copy the given slides (by id, in the given order) into a new .pptx
+        saved in a temporary folder, returning its path. Exports remain available
+        until the project is closed. By default, filenames are numbered starting
+        at export_1.pptx for each project session.
+        """
+        if not slide_ids:
+            raise ValueError("No slides selected for export")
+
+        pairs, template_path = self._selection_pairs(slide_ids)
 
         with self._export_lock:
             if out_filename is None:
