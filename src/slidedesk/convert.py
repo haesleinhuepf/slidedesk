@@ -19,6 +19,46 @@ class ConversionError(RuntimeError):
     pass
 
 
+def repair_pptx(source: Path, repaired: Path) -> None:
+    """Open and resave an export using a dedicated PowerPoint instance."""
+    if platform.system() != "Windows":
+        raise ConversionError("Repairing PowerPoint exports requires Microsoft PowerPoint on Windows.")
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise ConversionError("pywin32 is required to repair PowerPoint exports.") from exc
+
+    source = source.resolve()
+    repaired = repaired.resolve()
+    repaired.parent.mkdir(parents=True, exist_ok=True)
+    app = None
+    presentation = None
+    pythoncom.CoInitialize()
+    try:
+        try:
+            app = win32com.client.DispatchEx("PowerPoint.Application")
+            app.DisplayAlerts = 2  # ppAlertsNone
+            presentation = app.Presentations.Open(
+                str(source), ReadOnly=False, Untitled=False, WithWindow=False
+            )
+            presentation.SaveAs(str(repaired), 24)  # ppSaveAsOpenXMLPresentation
+        finally:
+            try:
+                if presentation is not None:
+                    presentation.Close()
+            finally:
+                if app is not None:
+                    app.Quit()
+    except Exception as exc:
+        raise ConversionError(f"PowerPoint failed to repair {source.name}: {exc}") from exc
+    finally:
+        pythoncom.CoUninitialize()
+
+    if not repaired.is_file() or repaired.stat().st_size == 0:
+        raise ConversionError(f"PowerPoint did not produce {repaired.name}")
+
+
 def _get_powerpoint_app():
     if platform.system() != "Windows":
         raise ConversionError(

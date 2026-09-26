@@ -6,7 +6,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_file, render_template
 
-from .. import embeddings
+from .. import convert, embeddings
 from ..project import SlideProject
 
 
@@ -199,6 +199,8 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
             out_path = project.export_selection([int(i) for i in slide_ids])
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except convert.ConversionError as exc:
+            return jsonify({"error": str(exc)}), 502
         return jsonify({"ok": True, "path": out_path.name})
 
     @app.get("/api/export/<path:filename>/download")

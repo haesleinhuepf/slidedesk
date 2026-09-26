@@ -438,5 +438,11 @@ class SlideProject:
                 out_path = self.export_dir / Path(out_filename).name
                 if out_path.suffix.lower() != ".pptx":
                     out_path = out_path.with_suffix(".pptx")
-            pptx_tools.save_selection_as_pptx(pairs, template_path, out_path)
+            # Only publish the completed, resaved presentation to the download directory.
+            with tempfile.TemporaryDirectory(prefix="slidedesk-repair-") as staging:
+                source = Path(staging) / "source.pptx"
+                repaired = Path(staging) / "repaired.pptx"
+                pptx_tools.save_selection_as_pptx(pairs, template_path, source)
+                convert.repair_pptx(source, repaired)
+                repaired.replace(out_path)
         return out_path
