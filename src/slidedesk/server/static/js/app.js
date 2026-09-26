@@ -50,6 +50,8 @@
     .zoom()
     .scaleExtent([0.01, 32])
     .interpolate(d3.interpolate)
+    // Plain wheel scrolling pans instead of zooming; shift+wheel still zooms.
+    .filter((event) => (event.type === "wheel" ? event.shiftKey : !event.ctrlKey && !event.button))
     .on("start", () => viewport.classList.add("grabbing"))
     .on("end", () => viewport.classList.remove("grabbing"))
     .on("zoom", (event) => {
@@ -57,12 +59,43 @@
     });
 
   d3.select(viewport).call(zoomBehavior);
+  d3.select(viewport).on("wheel.pan", handleWheelPan);
 
   // D3 prevents the mouse's default focus change when starting a drag.
   // Explicitly leave toolbar inputs so subsequent navigation keys pan the view.
   viewport.addEventListener("pointerdown", () => {
     viewport.focus({ preventScroll: true });
   });
+
+  // Clamp panning/zooming so the occupied content can't be scrolled far off-screen.
+  function clampTransform(transform) {
+    const rect = viewport.getBoundingClientRect();
+    const items = renderedItems;
+    const contentWidth = items.reduce((right, item) => Math.max(right, item.x + SLIDE_WIDTH), SLIDE_WIDTH);
+    const contentHeight = items.reduce((bottom, item) => Math.max(bottom, item.y + (CELL_H - GAP)), CELL_H - GAP);
+    const margin = 80; // keep at least this much of the content visible, in screen px
+    const scaledWidth = contentWidth * transform.k;
+    const scaledHeight = contentHeight * transform.k;
+    const minX = margin - scaledWidth;
+    const maxX = rect.width - margin;
+    const minY = margin - scaledHeight;
+    const maxY = rect.height - margin;
+    const x = Math.max(Math.min(minX, maxX), Math.min(transform.x, Math.max(minX, maxX)));
+    const y = Math.max(Math.min(minY, maxY), Math.min(transform.y, Math.max(minY, maxY)));
+    return d3.zoomIdentity.translate(x, y).scale(transform.k);
+  }
+
+  // Wheel without shift pans the canvas; shift+wheel is left to D3's own zoom handling.
+  function handleWheelPan(event) {
+    if (event.shiftKey) return;
+    event.preventDefault();
+    const lineHeight = 16;
+    const pageFactor = viewport.clientHeight;
+    const factor = event.deltaMode === 1 ? lineHeight : event.deltaMode === 2 ? pageFactor : 1;
+    const transform = d3.zoomTransform(viewport);
+    const next = transform.translate(-event.deltaX * factor / transform.k, -event.deltaY * factor / transform.k);
+    d3.select(viewport).interrupt().call(zoomBehavior.transform, clampTransform(next));
+  }
 
   document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
@@ -707,8 +740,10 @@
   function setPanZoomEnabled(enabled) {
     if (enabled) {
       d3.select(viewport).call(zoomBehavior);
+      d3.select(viewport).on("wheel.pan", handleWheelPan);
     } else {
       d3.select(viewport).on(".zoom", null);
+      d3.select(viewport).on("wheel.pan", null);
     }
   }
 
