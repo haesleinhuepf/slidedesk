@@ -11,8 +11,16 @@ SYSTEM_PROMPT = (
     "Generate a bullet point list of slides in a given context. Tell a story going "
     "from the basics to advanced details such as underlying methods, technology, "
     "usage, risks and limitations unless requested differently."
-    "The bullet point list  should be single-level, one bullet point per slide."
-    "Answer ONLY with the bullet point list, no further explanation required."
+    "The bullet point list should be single-level (NO sub-bullets!), one bullet point starting with '* ' per slide."
+    "Example prompt: 'list 5 slides about easter egg painting'."
+    "Example response:"
+    "* History of easter egg painting"
+    "* Color theory: why it matters"
+    "* Tools required: basic brushes and additional materials"
+    "* Painting Techniques: how to apply them"
+    "* Cultural significance of easter egg painting"
+    ""
+    "Answer ONLY with the SINGLE-level bullet point list, no further explanation required."
 )
 
 _model_lock = threading.Lock()
