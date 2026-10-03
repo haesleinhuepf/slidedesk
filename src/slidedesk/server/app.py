@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -26,6 +27,15 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
 
     def deck_file_exists(deck):
         return deck is not None and (project.folder / deck.pptx_path).is_file()
+
+    def deck_file_path(deck):
+        if deck is None:
+            return None
+        project_folder = project.folder.resolve()
+        deck_path = (project_folder / deck.pptx_path).resolve()
+        if not deck_path.is_relative_to(project_folder) or not deck_path.is_file():
+            return None
+        return deck_path
 
     def deck_to_json(deck):
         return {
@@ -291,6 +301,30 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
         if project.deck(deck_id) is None:
             return jsonify({"error": "deck not found"}), 404
         project.refresh_deck(deck_id)
+        return jsonify({"ok": True})
+
+    @app.post("/api/decks/<int(signed=True):deck_id>/open")
+    def api_deck_open(deck_id):
+        deck_path = deck_file_path(project.deck(deck_id))
+        if deck_path is None:
+            return jsonify({"error": "slide deck not found"}), 404
+        if not hasattr(os, "startfile"):
+            return jsonify({"error": "Opening slide decks is only supported on Windows"}), 501
+        try:
+            os.startfile(str(deck_path))
+        except OSError as exc:
+            return jsonify({"error": str(exc)}), 500
+        return jsonify({"ok": True})
+
+    @app.post("/api/decks/<int(signed=True):deck_id>/open-folder")
+    def api_deck_open_folder(deck_id):
+        deck_path = deck_file_path(project.deck(deck_id))
+        if deck_path is None:
+            return jsonify({"error": "slide deck not found"}), 404
+        try:
+            subprocess.Popen(["explorer", f"/select,{deck_path}"])
+        except OSError as exc:
+            return jsonify({"error": str(exc)}), 500
         return jsonify({"ok": True})
 
     @app.post("/api/export")

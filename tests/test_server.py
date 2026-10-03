@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 
 import pytest
 
@@ -55,6 +57,23 @@ def test_slide_lists_exclude_missing_files(indexed_project):
         assert response.status_code == 200
         assert len(response.get_json()) == (1 if deck.name == "available.pptx" else 0)
     assert client.get("/api/decks/999/slides").get_json() == []
+
+
+def test_open_deck_actions_launch_selected_file(indexed_project, monkeypatch):
+    project = indexed_project
+    deck = next(d for d in project.decks() if d.name == "available.pptx")
+    opened_files = []
+    explorer_calls = []
+    monkeypatch.setattr(os, "startfile", opened_files.append, raising=False)
+    monkeypatch.setattr(subprocess, "Popen", lambda args: explorer_calls.append(args))
+    client = create_app(project).test_client()
+
+    assert client.post(f"/api/decks/{deck.id}/open").status_code == 200
+    assert client.post(f"/api/decks/{deck.id}/open-folder").status_code == 200
+    assert opened_files == [str(project.folder / deck.pptx_path)]
+    assert explorer_calls == [["explorer", f"/select,{project.folder / deck.pptx_path}"]]
+    assert client.post("/api/decks/999/open").status_code == 404
+    assert client.post("/api/decks/999/open-folder").status_code == 404
 
 
 def test_similar_slides_exclude_missing_files(indexed_project, monkeypatch):

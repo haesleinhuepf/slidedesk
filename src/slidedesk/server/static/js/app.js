@@ -978,6 +978,23 @@
     copySlideToClipboard(slideId);
   });
 
+  async function openDeckAction(action) {
+    const menu = document.getElementById("slide-context-menu");
+    const entry = state.slidesById.get(Number(menu.dataset.slideId));
+    hideContextMenu();
+    if (!entry) return;
+    try {
+      const res = await fetch(`/api/decks/${entry.deck.id}/${action}`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not open slide deck");
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
+  document.getElementById("menu-open-deck").addEventListener("click", () => openDeckAction("open"));
+  document.getElementById("menu-open-deck-folder").addEventListener("click", () => openDeckAction("open-folder"));
+
   document.addEventListener("click", (event) => {
     if (suppressNextDocumentClick) {
       suppressNextDocumentClick = false;
