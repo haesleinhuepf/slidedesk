@@ -434,7 +434,6 @@
     select.title = navigationHistory.length ? locationLabel(navigationHistory[historyIndex]) : "Pool";
     document.getElementById("history-back-btn").disabled = historyIndex >= navigationHistory.length - 1;
     document.getElementById("history-forward-btn").disabled = historyIndex === 0;
-    document.getElementById("deck-refresh-btn").classList.toggle("hidden", state.mode !== "deck");
   }
 
   function visitHistory(index) {
@@ -884,6 +883,7 @@
     document.getElementById("menu-copy-slide").hidden = state.mode === "pool";
     document.getElementById("menu-toggle-slide-hidden").hidden = state.mode === "pool";
     document.getElementById("menu-toggle-deck-hidden").hidden = state.mode !== "pool";
+    document.getElementById("menu-refresh-deck").hidden = state.mode !== "pool";
     document.getElementById("menu-toggle-slide-hidden").textContent = slide.hidden ? "Unhide slide" : "Hide slide";
     document.getElementById("menu-toggle-deck-hidden").textContent = deck.slides.every((s) => s.hidden) ? "Unhide slide deck" : "Hide slide deck";
     document.getElementById("menu-remove").hidden = menu.dataset.source !== "selection";
@@ -1002,8 +1002,11 @@
   });
 
   // -- deck refresh -------------------------------------------------------------
-  document.getElementById("deck-refresh-btn").addEventListener("click", () => {
-    if (state.focusDeckId != null) refreshDeck(state.focusDeckId);
+  document.getElementById("menu-refresh-deck").addEventListener("click", () => {
+    const menu = document.getElementById("slide-context-menu");
+    const entry = state.slidesById.get(Number(menu.dataset.slideId));
+    hideContextMenu();
+    if (entry) refreshDeck(entry.deck.id);
   });
 
   async function refreshDeck(deckId) {
@@ -1014,7 +1017,8 @@
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || "Refresh failed");
       await loadDecks();
-      if (state.mode === "deck") render();
+      updateSelectionUi();
+      render();
     } catch (error) {
       window.alert(error.message);
     } finally {

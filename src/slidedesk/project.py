@@ -92,7 +92,31 @@ class SlideProject:
         scan_once(self, stop_event=stop_event)
     
     def refresh_deck(self, deck_id: int) -> None:
-        """Force a fresh scan of one deck and its derived database contents."""
+        """Delete a deck's PDFs, PNGs and embeddings, then rescan it from scratch."""
+        deck = self.deck(deck_id)
+        if deck is None:
+            return
+        with self._scan_lock:
+            slide_ids = [s.id for s in self.slides(deck_id)]
+            pdfs = [self.folder / p for p in (deck.pdf_path, deck.hidden_pdf_path) if p]
+            for pdf in pdfs:
+                if not pdf.is_file():
+                    continue
+                for page in range(1, len(slide_ids) + 1):
+                    try:
+                        (self.cache_dir / f"{images._cache_key(pdf, page)}.png").unlink(missing_ok=True)
+                    except OSError as exc:
+                        log.warning("Could not delete cached PNG for %s: %s", pdf, exc)
+                try:
+                    pdf.unlink()
+                except OSError as exc:
+                    log.warning("Could not delete %s: %s", pdf, exc)
+            images._read_pdf_bytes_cached.cache_clear()
+            with self._conn_lock, self.conn:
+                for table in ("slide_embeddings", "slide_image_embeddings"):
+                    self.conn.executemany(
+                        f"DELETE FROM {table} WHERE slide_id = ?", [(i,) for i in slide_ids]
+                    )
         scan_once(self, deck_id=deck_id, force=True)
 
     def scan_in_background(self, interval: float = 5.0) -> BackgroundScanner:
