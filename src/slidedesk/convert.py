@@ -118,7 +118,7 @@ def convert_pptx_to_pdf(pptx_path: Path, out_pdf_path: Path, timeout: int = 180)
 
 
 def _copy_to_clipboard(pptx_path: Path, do_copy) -> None:
-    """Open `pptx_path` in a visible PowerPoint window and run `do_copy(presentation)`,
+    """Open `pptx_path` in a windowless PowerPoint and run `do_copy(presentation)`,
     which is expected to call `.Copy()` on some slide selection to populate the clipboard.
     """
     if platform.system() != "Windows":
@@ -137,9 +137,8 @@ def _copy_to_clipboard(pptx_path: Path, do_copy) -> None:
             app = win32com.client.DispatchEx("PowerPoint.Application")
             _retain_app(app)
             app.DisplayAlerts = 2  # ppAlertsNone
-            app.Visible = True  # PowerPoint needs a window to populate the clipboard
             presentation = app.Presentations.Open(
-                str(pptx_path), ReadOnly=True, Untitled=False, WithWindow=True
+                str(pptx_path), ReadOnly=True, Untitled=False, WithWindow=False
             )
             do_copy(presentation)
         finally:
@@ -157,7 +156,7 @@ def _copy_to_clipboard(pptx_path: Path, do_copy) -> None:
 def copy_slide_to_clipboard(pptx_path: Path, index_in_deck: int) -> None:
     """Copy one slide from `pptx_path` onto the OS clipboard via PowerPoint's
     native `Slide.Copy()`, so it can be pasted directly into another open
-    PowerPoint presentation. Requires a visible PowerPoint window on Windows.
+    PowerPoint presentation. Requires PowerPoint on Windows.
     """
     def do_copy(presentation):
         slide_number = index_in_deck + 1
