@@ -40,6 +40,7 @@
     focusSlideId: null,
     selection: new Set(),
     showHidden: false,
+    showLayout: true,
     refreshingDeckIds: new Set(),
     simulation: null, // active d3-force simulation, if mode === "similar"
   };
@@ -309,6 +310,10 @@
   }
 
   // -- rendering (pool / search / deck) --------------------------------------
+  function slideImageUrl(id) {
+    return `/api/slides/${id}/image${state.showLayout ? "" : "?layout=false"}`;
+  }
+
   function thumbClasses(item) {
     const classes = ["slide-thumb"];
     if (state.selection.has(item.slide.id)) classes.push("selected");
@@ -320,7 +325,7 @@
   function thumbInnerHTML(item) {
     const badge = item.slide.hidden ? '<span class="badge">hidden</span>' : "";
     const label = `<span class="deck-label">${escapeHtml(item.deck.name)} #${item.slide.index_in_deck + 1} / ${item.deck.slides.length}</span>`;
-    return `<img loading="lazy" src="/api/slides/${item.slide.id}/image" alt="slide ${item.slide.index_in_deck + 1}" />${badge}${label}`;
+    return `<img loading="lazy" src="${slideImageUrl(item.slide.id)}" alt="slide ${item.slide.index_in_deck + 1}" />${badge}${label}`;
   }
 
   function renderStatic(items) {
@@ -745,7 +750,7 @@
       const { slide, deck } = state.slidesById.get(id);
       const label = `${i + 1}. ${deck.name} #${slide.index_in_deck + 1} / ${deck.slides.length}`;
       this.setAttribute("aria-label", label);
-      const markup = `<img loading="lazy" draggable="false" src="/api/slides/${id}/image" alt="" /><span>${escapeHtml(label)}</span>`;
+      const markup = `<img loading="lazy" draggable="false" src="${slideImageUrl(id)}" alt="" /><span>${escapeHtml(label)}</span>`;
       if (this.innerHTML !== markup) this.innerHTML = markup;
     });
     cards.order();
@@ -1311,6 +1316,12 @@
   document.getElementById("toggle-hidden").addEventListener("change", (event) => {
     state.showHidden = event.target.checked;
     render();
+  });
+
+  document.getElementById("toggle-layout").addEventListener("change", (event) => {
+    state.showLayout = event.target.checked;
+    render();
+    updateSelectionUi();
   });
 
   document.getElementById("export-btn").addEventListener("click", exportSelection);

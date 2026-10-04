@@ -24,18 +24,20 @@ def test_pdf_exports_mirror_source_tree_and_refresh(tmp_path, monkeypatch):
     try:
         project.scan()
         assert len(project.decks()) == 2
-        assert len(calls) == 4
+        assert len(calls) == 6
         for deck in project.decks():
             expected = Path(".slidedesk/_cache") / deck.pptx_path
             assert deck.pdf_path == expected.with_suffix(".pdf").as_posix()
             assert deck.hidden_pdf_path == expected.with_suffix(".hidden.pdf").as_posix()
+            assert deck.strip_pdf_path == expected.with_suffix(".strip-layout.hidden.pdf").as_posix()
             assert (tmp_path / deck.pdf_path).exists()
             assert (tmp_path / deck.hidden_pdf_path).exists()
+            assert (tmp_path / deck.strip_pdf_path).exists()
             assert not (tmp_path / deck.pptx_path).with_suffix(".pdf").exists()
         project.scan()
-        assert len(calls) == 4
-        project.refresh_deck(project.decks()[0].id)
         assert len(calls) == 6
+        project.refresh_deck(project.decks()[0].id)
+        assert len(calls) == 9
     finally:
         project.close()
 
@@ -55,6 +57,9 @@ def test_scan_relocates_indexed_sidecars_without_conversion(tmp_path, monkeypatc
              "talks/deck.pdf", "talks/deck.hidden.pdf"),
         )
         project.conn.commit()
+        strip = tmp_path / ".slidedesk/_cache/talks/deck.strip-layout.hidden.pdf"
+        strip.parent.mkdir(parents=True, exist_ok=True)
+        strip.write_bytes(b"strip")
 
         def unexpected_conversion(*args):
             raise AssertionError("Existing exports should be reused")

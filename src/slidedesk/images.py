@@ -29,10 +29,11 @@ def read_pdf_bytes(pdf_path: Path) -> bytes:
 
 
 def render_page(
-    pdf_path: Path, page: int, cache_dir: Path
+    pdf_path: Path, page: int, cache_dir: Path, grayscale: bool = False
 ) -> Image.Image:
     """Return the given 1-based `page` of `pdf_path` as a PIL Image, using a
     PNG cache on disk keyed by pdf path/mtime/page so repeat requests are cheap.
+    With `grayscale`, the cached PNG is converted to grayscale before saving.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
     key = _cache_key(pdf_path, page)
@@ -46,6 +47,8 @@ def render_page(
     if not pages:
         raise ValueError(f"Page {page} not found in {pdf_path}")
     image = pages[0]
+    if grayscale:
+        image = image.convert("L").convert("RGB")
     image.save(cached, format="PNG")
     return image
 

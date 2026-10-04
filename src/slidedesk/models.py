@@ -18,6 +18,8 @@ class Deck:
     hidden_pdf_path: Optional[str]
     hidden_pdf_mtime: Optional[float]
     last_scanned: Optional[float]
+    strip_pdf_path: Optional[str] = None
+    strip_pdf_mtime: Optional[float] = None
 
     @property
     def name(self) -> str:
@@ -34,6 +36,8 @@ class Deck:
             hidden_pdf_path=row["hidden_pdf_path"],
             hidden_pdf_mtime=row["hidden_pdf_mtime"],
             last_scanned=row["last_scanned"],
+            strip_pdf_path=row["strip_pdf_path"],
+            strip_pdf_mtime=row["strip_pdf_mtime"],
         )
 
 

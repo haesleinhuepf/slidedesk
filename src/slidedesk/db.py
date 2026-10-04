@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS slide_image_embeddings (
     updated_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS slide_strip_image_embeddings (
+    slide_id INTEGER PRIMARY KEY REFERENCES slides(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS slides_fts USING fts5(
     text,
     content='slides',
@@ -77,6 +85,10 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
+    deck_columns = {row["name"] for row in conn.execute("PRAGMA table_info(decks)")}
+    for column, kind in (("strip_pdf_path", "TEXT"), ("strip_pdf_mtime", "REAL")):
+        if column not in deck_columns:
+            conn.execute(f"ALTER TABLE decks ADD COLUMN {column} {kind}")
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(slides)")}
     if "user_hidden" not in columns:
         conn.execute("ALTER TABLE slides ADD COLUMN user_hidden INTEGER")

@@ -98,7 +98,7 @@ class SlideProject:
             return
         with self._scan_lock:
             slide_ids = [s.id for s in self.slides(deck_id)]
-            pdfs = [self.folder / p for p in (deck.pdf_path, deck.hidden_pdf_path) if p]
+            pdfs = [self.folder / p for p in (deck.pdf_path, deck.hidden_pdf_path, deck.strip_pdf_path) if p]
             for pdf in pdfs:
                 if not pdf.is_file():
                     continue
@@ -113,7 +113,8 @@ class SlideProject:
                     log.warning("Could not delete %s: %s", pdf, exc)
             images._read_pdf_bytes_cached.cache_clear()
             with self._conn_lock, self.conn:
-                for table in ("slide_embeddings", "slide_image_embeddings"):
+                for table in ("slide_embeddings", "slide_image_embeddings",
+                              "slide_strip_image_embeddings"):
                     self.conn.executemany(
                         f"DELETE FROM {table} WHERE slide_id = ?", [(i,) for i in slide_ids]
                     )
@@ -277,7 +278,7 @@ class SlideProject:
             count += 1
         return count
 
-    def _image_source_key(self, slide_id: int) -> Optional[str]:
+    def _image_source_key(self, slide_id: int, strip: bool = False) -> Optional[str]:
         """Identify the rendered source, including changes to either PDF export."""
         slide = self.slide(slide_id)
         if slide is None:
@@ -285,7 +286,10 @@ class SlideProject:
         deck = self.deck(slide.deck_id)
         if deck is None or not (self.folder / deck.pptx_path).is_file():
             return None
-        pdf = deck.hidden_pdf_path if slide.visible_pdf_page is None else deck.pdf_path
+        if strip:
+            pdf = deck.strip_pdf_path
+        else:
+            pdf = deck.hidden_pdf_path if slide.visible_pdf_page is None else deck.pdf_path
         if not pdf:
             return None
         try:
@@ -293,31 +297,42 @@ class SlideProject:
             pptx_stat = (self.folder / deck.pptx_path).stat()
         except OSError:
             return None
+        page = None if strip else slide.visible_pdf_page
         return repr((pdf, stat.st_mtime_ns, stat.st_size, pptx_stat.st_mtime_ns,
-                     slide.index_in_deck, slide.visible_pdf_page))
+                     slide.index_in_deck, page))
 
     def embed_images_pending(self, limit: int = 20, stop_event=None) -> int:
         """Cache all renderable slides, including hidden slides and empty text.
 
         Rendering and inference run outside the DB lock. Recheck the source before
-        writing so a concurrent refresh cannot store an obsolete vector.
+        writing so a concurrent refresh cannot store an obsolete vector. Both the
+        normal and the strip-layout renderings are embedded (separate tables).
         """
         count = 0
         with self._image_embedding_lock:
+            for strip in (False, True):
+                count += self._embed_images_pending(strip, limit - count, stop_event)
+        return count
+
+    def _embed_images_pending(self, strip: bool, limit: int, stop_event) -> int:
+        table = "slide_strip_image_embeddings" if strip else "slide_image_embeddings"
+        count = 0
+        if True:
             with self._conn_lock:
                 rows = self.conn.execute(
-                    "SELECT s.id, e.model, e.source_key FROM slides s "
-                    "LEFT JOIN slide_image_embeddings e ON e.slide_id = s.id ORDER BY s.id"
+                    f"SELECT s.id, e.model, e.source_key FROM slides s "
+                    f"LEFT JOIN {table} e ON e.slide_id = s.id ORDER BY s.id"
                 ).fetchall()
             for row in rows:
                 if count >= limit or (stop_event is not None and stop_event.is_set()):
                     break
-                key = self._image_source_key(row["id"])
+                key = self._image_source_key(row["id"], strip)
                 if key is None or (row["model"] == self.IMAGE_EMBEDDING_MODEL
                                    and row["source_key"] == key):
                     continue
                 try:
-                    with self.slide_image(row["id"]) as image:
+                    with (self.slide_image(row["id"], layout=False) if strip
+                          else self.slide_image(row["id"])) as image:
                         vector = image_embeddings.embed_image(image, self.IMAGE_EMBEDDING_MODEL)
                 except embeddings.EmbeddingError:
                     # Model/dependency failures affect every slide; retry next pass.
@@ -328,10 +343,10 @@ class SlideProject:
                 with self._conn_lock:
                     if stop_event is not None and stop_event.is_set():
                         break
-                    if self._image_source_key(row["id"]) != key:
+                    if self._image_source_key(row["id"], strip) != key:
                         continue
                     self.conn.execute(
-                        "INSERT INTO slide_image_embeddings "
+                        f"INSERT INTO {table} "
                         "(slide_id, model, source_key, vector, updated_at) VALUES (?, ?, ?, ?, ?) "
                         "ON CONFLICT(slide_id) DO UPDATE SET model=excluded.model, "
                         "source_key=excluded.source_key, vector=excluded.vector, updated_at=excluded.updated_at",
@@ -342,15 +357,19 @@ class SlideProject:
                 count += 1
         return count
 
-    def _similar_cached(self, slide_id: int, image: bool = False) -> List[int]:
-        table = "slide_image_embeddings" if image else "slide_embeddings"
+    def _similar_cached(self, slide_id: int, image: bool = False, strip: bool = False) -> List[int]:
+        image = image or strip
+        if strip:
+            table = "slide_strip_image_embeddings"
+        else:
+            table = "slide_image_embeddings" if image else "slide_embeddings"
         model = self.IMAGE_EMBEDDING_MODEL if image else self.EMBEDDING_MODEL
         with self._conn_lock:
             row = self.conn.execute(
                 f"SELECT * FROM {table} WHERE slide_id = ? AND model = ?",
                 (slide_id, model),
             ).fetchone()
-            if row is None or (image and row["source_key"] != self._image_source_key(slide_id)):
+            if row is None or (image and row["source_key"] != self._image_source_key(slide_id, strip)):
                 return []
             target = embeddings.unpack_vector(row["vector"])
             rows = self.conn.execute(
@@ -360,22 +379,25 @@ class SlideProject:
         scored = [
             (embeddings.cosine_similarity(target, embeddings.unpack_vector(row["vector"])), row["slide_id"])
             for row in rows
-            if not image or row["source_key"] == self._image_source_key(row["slide_id"])
+            if not image or row["source_key"] == self._image_source_key(row["slide_id"], strip)
         ]
         scored.sort(key=lambda t: t[0], reverse=True)
         return [sid for _, sid in scored]
 
     def similar_slides(self, slide_id: int, top_k: int = 16) -> List[Slide]:
-        """Image matches first, then additional text matches, in one deduplicated list.
+        """Strip-layout image matches first, then image matches, then text matches.
 
-        Reserve half the slots for visual matches. Fill unused slots from either
-        cache without comparing scores from different embedding spaces.
+        Reserve half the slots for visual matches (strip-layout before regular).
+        Fill unused slots from any cache without comparing scores from different
+        embedding spaces.
         """
         if top_k <= 0:
             return []
+        stripped = self._similar_cached(slide_id, strip=True)
         visual = self._similar_cached(slide_id, image=True)
         textual = self._similar_cached(slide_id)
-        ids = list(dict.fromkeys(visual[:(top_k + 1) // 2] + textual + visual))[:top_k]
+        primary = list(dict.fromkeys(stripped + visual))
+        ids = list(dict.fromkeys(primary[:(top_k + 1) // 2] + stripped + textual + visual))[:top_k]
         slides = [self.slide(sid) for sid in ids]
         return [s for s in slides if s is not None]
 
@@ -396,14 +418,25 @@ class SlideProject:
         return [s for s in slides if s is not None]
 
     # -- rendering --------------------------------------------------------
-    def slide_image(self, slide_id: int) -> Image.Image:
-        """Render the given slide to a PIL Image, using the correct PDF export."""
+    def slide_image(self, slide_id: int, layout: bool = True) -> Image.Image:
+        """Render the given slide to a PIL Image, using the correct PDF export.
+
+        With `layout=False`, the grayscale strip-layout export is used.
+        """
         slide = self.slide(slide_id)
         if slide is None:
             raise KeyError(f"No such slide: {slide_id}")
         deck = self.deck(slide.deck_id)
         if deck is None:
             raise KeyError(f"No such deck: {slide.deck_id}")
+
+        if not layout:
+            if not deck.strip_pdf_path:
+                raise FileNotFoundError("strip-layout export not available yet")
+            return images.render_page(
+                self.folder / deck.strip_pdf_path, slide.index_in_deck + 1,
+                self.cache_dir, grayscale=True,
+            )
 
         if slide.visible_pdf_page is None:
             if not deck.hidden_pdf_path:

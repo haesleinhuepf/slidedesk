@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pptx import Presentation
 
-from . import pptx_tools
+from . import layout_strip, pptx_tools
 from .convert import ConversionError, convert_pptx_to_pdf
 from . import convert
 
@@ -125,6 +125,8 @@ def _scan_once(
 
         pdf_path = (project.cache_dir / rel_pptx).with_suffix(".pdf")
         hidden_pdf_path = (project.cache_dir / rel_pptx).with_suffix(".hidden.pdf")
+        strip_pdf_path = (project.cache_dir / rel_pptx).with_suffix(".strip-layout.hidden.pdf")
+        strip_pdf_rel = _rel(root, strip_pdf_path)
         pdf_rel = _rel(root, pdf_path)
         hidden_pdf_rel = _rel(root, hidden_pdf_path)
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,6 +159,16 @@ def _scan_once(
             except ConversionError as exc:
                 log.warning("Skipping hidden-PDF export for %s: %s", pptx_path, exc)
 
+        if not strip_pdf_path.exists() or needs_reindex:
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_pptx = Path(tmp) / pptx_path.name
+                    layout_strip.make_strip_layout_copy(pptx_path, tmp_pptx)
+                    convert_pptx_to_pdf(tmp_pptx, strip_pdf_path)
+            except ConversionError as exc:
+                log.warning("Skipping strip-layout PDF export for %s: %s", pptx_path, exc)
+
+        strip_pdf_mtime = strip_pdf_path.stat().st_mtime if strip_pdf_path.exists() else None
         pdf_mtime = pdf_path.stat().st_mtime if pdf_path.exists() else None
         hidden_pdf_mtime = (
             hidden_pdf_path.stat().st_mtime if hidden_pdf_path.exists() else None
@@ -179,6 +191,10 @@ def _scan_once(
                     "hidden_pdf_path=?, hidden_pdf_mtime=?, last_scanned=? WHERE id=?",
                     (mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime, now, deck_id),
                 )
+            conn.execute(
+                "UPDATE decks SET strip_pdf_path=?, strip_pdf_mtime=? WHERE id=?",
+                (strip_pdf_rel, strip_pdf_mtime, deck_id),
+            )
 
             if needs_reindex:
                 _index_slides(conn, deck_id, pptx_path)
