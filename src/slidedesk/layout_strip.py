@@ -178,7 +178,12 @@ def make_strip_layout_copy(pptx_path: Path, out_path: Path) -> None:
     for master in presentation.slide_masters:
         master_images |= _picture_hashes(master.shapes)
 
-    for container in (*presentation.slide_masters, *presentation.slide_layouts):
+    containers = []
+    for master in presentation.slide_masters:
+        containers.append(master)
+        containers.extend(master.slide_layouts)
+
+    for container in containers:
         _set_background_white(container)
         _strip_template_shapes(container.shapes)
         for shape in container.shapes:

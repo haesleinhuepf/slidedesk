@@ -144,7 +144,6 @@ button {
 button:disabled { opacity: 0.4; cursor: default; }
 button:not(:disabled):hover { border-color: var(--accent); }
 
-#selection-count { font-size: 13px; color: var(--muted); white-space: nowrap; }
 #scan-status { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
 #embedding-status { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
@@ -271,7 +270,8 @@ button:not(:disabled):hover { border-color: var(--accent); }
   touch-action: pan-y;
 }
 #selection-bar h2 { margin: 0 0 8px; font-size: 14px; }
-#selection-actions { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+#selection-actions { display: flex; gap: 8px; margin: 12px 0; }
+#selection-actions button { min-width: 36px; padding: 6px; font-size: 16px; line-height: 1; }
 #selection-help { margin: 0 0 16px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .selection-slide { display: block; width: 100%; margin-bottom: 12px; padding: 5px; cursor: grab; text-align: left; }
 .selection-slide img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; pointer-events: none; }

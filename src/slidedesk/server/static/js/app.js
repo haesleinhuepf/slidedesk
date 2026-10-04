@@ -716,7 +716,7 @@
       if (!state.slidesById.has(id)) state.selection.delete(id);
     }
     const count = state.selection.size;
-    document.getElementById("selection-count").textContent = `${count} selected`;
+    document.getElementById("selection-count").textContent = `Selected slides (${count})`;
     document.getElementById("export-btn").disabled = count === 0;
     document.getElementById("copy-selection-btn").disabled = count === 0;
     document.getElementById("clear-selection-btn").disabled = count === 0;

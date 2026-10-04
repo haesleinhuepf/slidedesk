@@ -52,12 +52,11 @@
   </div>
 
   <aside id="selection-bar" aria-label="Selected slides">
-    <h2>Selected slides</h2>
-    <span id="selection-count">0 selected</span>
+    <h2 id="selection-count">Selected slides (0)</h2>
     <div id="selection-actions">
-      <button id="export-btn" disabled>Export selection</button>
-      <button id="copy-selection-btn" disabled>Copy slides</button>
-      <button id="clear-selection-btn" disabled>Clear selection</button>
+      <button id="export-btn" type="button" aria-label="Export selection" title="Export selection" disabled>📤</button>
+      <button id="copy-selection-btn" type="button" aria-label="Copy slides" title="Copy slides" disabled>📋</button>
+      <button id="clear-selection-btn" type="button" aria-label="Clear selection" title="Clear selection" disabled>🗑️</button>
     </div>
     <p id="selection-help">Right-click or hold a slide to add it to selection. Drag to reorder.</p>
     <div id="selected-slides" aria-label="Selection order"></div>
