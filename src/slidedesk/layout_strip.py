@@ -1,6 +1,7 @@
 """Produce a copy of a .pptx with all slides visible and the layout/theme styling removed."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from pptx import Presentation
@@ -150,9 +151,32 @@ def _strip_template_shapes(template_shapes) -> None:
             _remove_shape(shape)
 
 
+def _picture_hashes(shapes) -> set:
+    hashes = set()
+    for shape in shapes:
+        if _shape_has_image(shape):
+            hashes.add(hashlib.sha1(shape.image.blob).hexdigest())
+        elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+            hashes |= _picture_hashes(shape.shapes)
+    return hashes
+
+
+def _remove_pictures(shapes, hashes: set) -> None:
+    for shape in list(shapes):
+        if _shape_has_image(shape):
+            if hashlib.sha1(shape.image.blob).hexdigest() in hashes:
+                _remove_shape(shape)
+        elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+            _remove_pictures(shape.shapes, hashes)
+
+
 def make_strip_layout_copy(pptx_path: Path, out_path: Path) -> None:
     """Save a copy of `pptx_path` with all slides visible and master/layout decoration removed."""
     presentation = Presentation(str(pptx_path))
+
+    master_images = set()
+    for master in presentation.slide_masters:
+        master_images |= _picture_hashes(master.shapes)
 
     for container in (*presentation.slide_masters, *presentation.slide_layouts):
         _set_background_white(container)
@@ -162,6 +186,7 @@ def make_strip_layout_copy(pptx_path: Path, out_path: Path) -> None:
 
     for slide in presentation.slides:
         set_slide_hidden(slide, False)
+        _remove_pictures(slide.shapes, master_images)
         _set_background_white(slide)
         for shape in slide.shapes:
             _set_shape_text_black(shape)
