@@ -79,10 +79,22 @@
     });
   }
 
+  // Re-layout after a zoom reflow: the anchor slide (the zoom target) snaps into
+  // place in front, while the other slides glide to their new positions behind it.
   function layoutItems(cols, shift) {
     assignPositions(cols, shift);
     const current = new Set(renderedItems);
-    canvas.selectAll(".slide-thumb").filter((d) => current.has(d)).interrupt()
+    const anchorId = layoutAnchor && layoutAnchor.id;
+    const thumbs = canvas.selectAll(".slide-thumb").filter((d) => current.has(d));
+    thumbs.style("z-index", (d) => (d.slide.id === anchorId ? 2 : 1));
+    thumbs.filter((d) => d.slide.id === anchorId).interrupt()
+      .style("left", (d) => `${d.x}px`)
+      .style("top", (d) => `${d.y}px`)
+      .style("opacity", 1);
+    thumbs.filter((d) => d.slide.id !== anchorId)
+      .transition()
+      .duration(MODE_TRANSITION_MS)
+      .ease(d3.easeCubicOut)
       .style("left", (d) => `${d.x}px`)
       .style("top", (d) => `${d.y}px`)
       .style("opacity", 1);
