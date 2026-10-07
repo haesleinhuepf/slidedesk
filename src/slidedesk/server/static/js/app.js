@@ -15,8 +15,10 @@
   const GAP = 18;
   const CELL_W = SLIDE_WIDTH + GAP;
   const CELL_H = SLIDE_HEIGHT + 16 + GAP; // Include the label below each slide.
-  const POOL_COLUMNS = 5;
-  const DECK_ROW_LENGTH = POOL_COLUMNS; // wrap the full-deck view every this many slides
+  const PADDING = 24;
+  const DEFAULT_SCALE = 1;
+  const MIN_SCALE = 0.05;
+  const MAX_SCALE = 32;
   const MODE_TRANSITION_MS = 500;
   const LONG_PRESS_MS = 1000;
   const MOVE_CANCEL_PX = 6;
@@ -52,21 +54,149 @@
   let activeListGenerationId = null;
 
   // -- zoom / pan (mouse drag, touch pinch/pan, arrow keys / WASD) ---------
+  let renderedItems = [];
+  let layoutCols = 1;
+  let layoutShift = 0;
+  let layoutAnchor = null; // { id, left }: slide and its column, kept across re-renders
+  let programmaticView = false;
+  let lastTransform = d3.zoomIdentity;
+  let viewTimer = null;
+
+  // The slides form one reflowing list: columns follow from the zoom scale and
+  // the viewport width, so zooming in shows fewer slides per row.
+  function columnsFor(k) {
+    return Math.max(1, Math.floor(((viewport.clientWidth - PADDING * 2) / k + GAP) / CELL_W));
+  }
+
+  // `shift` offsets the list so a chosen slide lands in a chosen column.
+  function assignPositions(cols, shift = 0) {
+    layoutCols = cols;
+    layoutShift = shift;
+    renderedItems.forEach((item, i) => {
+      const j = i + shift;
+      item.x = (j % cols) * CELL_W;
+      item.y = Math.floor(j / cols) * CELL_H;
+    });
+  }
+
+  function layoutItems(cols, shift) {
+    assignPositions(cols, shift);
+    const current = new Set(renderedItems);
+    canvas.selectAll(".slide-thumb").filter((d) => current.has(d)).interrupt()
+      .style("left", (d) => `${d.x}px`)
+      .style("top", (d) => `${d.y}px`)
+      .style("opacity", 1);
+  }
+
+  // Slide under (or nearest to) a screen point, with the point's fractional offset in its cell.
+  function anchorAt(sx, sy, t) {
+    const cx = (sx - t.x) / t.k;
+    const cy = (sy - t.y) / t.k;
+    let best = null;
+    let bestDist = Infinity;
+    renderedItems.forEach((item) => {
+      const dx = Math.max(item.x - cx, 0, cx - (item.x + CELL_W));
+      const dy = Math.max(item.y - cy, 0, cy - (item.y + CELL_H));
+      const dist = Math.hypot(dx, dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = item;
+      }
+    });
+    return best && { id: best.slide.id, fx: (cx - best.x) / CELL_W, fy: (cy - best.y) / CELL_H };
+  }
+
+  // Wrap the rows around the anchor: it keeps its exact screen position, and
+  // as many whole columns fit left and right of it as the viewport allows.
+  function viewFor(k, anchor, sx, sy) {
+    k = Math.min(MAX_SCALE, Math.max(MIN_SCALE, k));
+    let index = anchor ? renderedItems.findIndex((it) => it.slide.id === anchor.id) : -1;
+    if (index === -1 && renderedItems.length) {
+      index = 0;
+      anchor = { id: renderedItems[0].slide.id, fx: 0, fy: 0 };
+    }
+    if (index === -1) return d3.zoomIdentity.translate(sx, sy).scale(k);
+    const cellW = CELL_W * k;
+    const ax = sx - anchor.fx * cellW;
+    const left = Math.max(0, Math.floor((ax - PADDING) / cellW));
+    const originX = ax - left * cellW;
+    const right = Math.floor(((viewport.clientWidth - PADDING - originX) / k - SLIDE_WIDTH) / CELL_W);
+    const cols = Math.max(left + 1, right + 1);
+    const shift = (((left - index) % cols) + cols) % cols;
+    layoutAnchor = { id: anchor.id, left };
+    if (cols !== layoutCols || shift !== layoutShift) layoutItems(cols, shift);
+    const item = renderedItems[index];
+    return clampTransform(d3.zoomIdentity
+      .translate(originX, sy - (item.y + anchor.fy * CELL_H) * k)
+      .scale(k));
+  }
+
+  function applyView(transform) {
+    programmaticView = true;
+    try {
+      d3.select(viewport).call(zoomBehavior.transform, transform);
+    } finally {
+      programmaticView = false;
+    }
+  }
+
+  function interruptView() {
+    if (viewTimer) viewTimer.stop();
+    viewTimer = null;
+  }
+
+  function animateView(k1, anchor, sx1, sy1, ms = 300) {
+    interruptView();
+    const t0 = d3.zoomTransform(viewport);
+    const item = renderedItems.find((it) => it.slide.id === anchor.id);
+    if (!item) return;
+    const sx0 = t0.x + (item.x + anchor.fx * CELL_W) * t0.k;
+    const sy0 = t0.y + (item.y + anchor.fy * CELL_H) * t0.k;
+    k1 = Math.min(MAX_SCALE, Math.max(MIN_SCALE, k1));
+    const timer = d3.timer((elapsed) => {
+      const e = d3.easeCubicInOut(Math.min(1, elapsed / ms));
+      applyView(viewFor(t0.k * Math.pow(k1 / t0.k, e), anchor, sx0 + (sx1 - sx0) * e, sy0 + (sy1 - sy0) * e));
+      if (elapsed >= ms) timer.stop();
+    });
+    viewTimer = timer;
+  }
+
+  function focalPoint(sourceEvent) {
+    const points = sourceEvent ? d3.pointers(sourceEvent, viewport) : [];
+    if (!points.length) return [viewport.clientWidth / 2, viewport.clientHeight / 2];
+    return [d3.mean(points, (p) => p[0]), d3.mean(points, (p) => p[1])];
+  }
+
   const zoomBehavior = d3
     .zoom()
-    .scaleExtent([0.01, 32])
+    .scaleExtent([MIN_SCALE, MAX_SCALE])
     .interpolate(d3.interpolate)
-    // Plain wheel scrolling pans instead of zooming; shift+wheel still zooms.
-    .filter((event) => (event.type === "wheel" ? event.shiftKey : !event.ctrlKey && !event.button))
-    .on("start", () => viewport.classList.add("grabbing"))
+    // Wheel events are handled by handleWheel so zooming can reflow around the pointer.
+    .filter((event) => event.type !== "wheel" && !event.ctrlKey && !event.button)
+    .on("start", (event) => {
+      viewport.classList.add("grabbing");
+      if (event.sourceEvent) interruptView();
+    })
     .on("end", () => viewport.classList.remove("grabbing"))
     .on("zoom", (event) => {
-      canvas.style("transform", `translate(${event.transform.x}px, ${event.transform.y}px) scale(${event.transform.k})`);
-      updateZoomNav(event.transform);
+      let t = event.transform;
+      if (!programmaticView && renderedItems.length && t.k !== lastTransform.k) {
+        // Pinch zoom: reflow around the gesture, keeping the slide there in place.
+        const [fx, fy] = focalPoint(event.sourceEvent);
+        t = viewFor(t.k, anchorAt(fx, fy, lastTransform), fx, fy);
+        viewport.__zoom = t;
+      }
+      lastTransform = t;
+      canvas.style("transform", `translate(${t.x}px, ${t.y}px) scale(${t.k})`);
+      updateZoomNav(t);
     });
 
-  d3.select(viewport).call(zoomBehavior);
-  d3.select(viewport).on("wheel.pan", handleWheelPan);
+  function bindViewport() {
+    d3.select(viewport).call(zoomBehavior);
+    d3.select(viewport).on("dblclick.zoom", null);
+    d3.select(viewport).on("wheel.pan", handleWheel);
+  }
+  bindViewport();
 
   // D3 prevents the mouse's default focus change when starting a drag.
   // Explicitly leave toolbar inputs so subsequent navigation keys pan the view.
@@ -92,16 +222,24 @@
     return d3.zoomIdentity.translate(x, y).scale(transform.k);
   }
 
-  // Wheel without shift pans the canvas; shift+wheel is left to D3's own zoom handling.
-  function handleWheelPan(event) {
-    if (event.shiftKey) return;
+  // Wheel pans the canvas; shift+wheel zooms around the pointer, reflowing the slides.
+  function handleWheel(event) {
     event.preventDefault();
+    interruptView();
     const lineHeight = 16;
     const pageFactor = viewport.clientHeight;
     const factor = event.deltaMode === 1 ? lineHeight : event.deltaMode === 2 ? pageFactor : 1;
     const transform = d3.zoomTransform(viewport);
+    if (event.shiftKey) {
+      const rect = viewport.getBoundingClientRect();
+      const sx = event.clientX - rect.left;
+      const sy = event.clientY - rect.top;
+      const delta = (event.deltaY || event.deltaX) * factor;
+      applyView(viewFor(transform.k * Math.pow(2, -delta * 0.002), anchorAt(sx, sy, transform), sx, sy));
+      return;
+    }
     const next = transform.translate(-event.deltaX * factor / transform.k, -event.deltaY * factor / transform.k);
-    d3.select(viewport).interrupt().call(zoomBehavior.transform, clampTransform(next));
+    applyView(clampTransform(next));
   }
 
   document.addEventListener("keydown", (event) => {
@@ -127,7 +265,8 @@
     const step = KEY_PAN_PX * (event.shiftKey ? FAST_PAN_MULTIPLIER : 1);
     const transform = d3.zoomTransform(viewport);
     // D3 translations use canvas units; keep keyboard speed constant on screen.
-    d3.select(viewport).interrupt().call(zoomBehavior.translateBy,
+    interruptView();
+    d3.select(viewport).call(zoomBehavior.translateBy,
       dx * step / transform.k, dy * step / transform.k);
   });
 
@@ -140,49 +279,24 @@
     };
   }
 
-  let renderedItems = [];
-
+  // A clicked slide keeps its scale and screen position; other views reset to the default scale.
   function fitView(clickedPosition = null) {
-    const padding = 24;
+    interruptView();
     const rect = viewport.getBoundingClientRect();
     const breadcrumb = document.getElementById("view-breadcrumb").getBoundingClientRect();
-    const top = Math.max(0, breadcrumb.bottom - rect.top) + padding;
-    const width = Math.max(1, viewport.clientWidth - padding * 2);
-    const height = Math.max(1, viewport.clientHeight - top - padding);
-    const items = renderedItems;
-    const contentWidth = items.reduce((right, item) => Math.max(right, item.x + SLIDE_WIDTH), SLIDE_WIDTH);
-    // Fit the actual occupied columns, including decks/results shorter than a row.
-    // Height only limits zoom when a single complete slide would not fit.
-    const k = Math.min(width / contentWidth, height / (CELL_H - GAP));
-    const focus = items.find((item) => item.slide.id === state.focusSlideId) || items[0];
-    const hasFocus = state.mode === "deck" || state.mode === "similar";
-    const focusY = hasFocus && focus ? focus.y : 0;
-    const desiredY = clickedPosition ? clickedPosition.y : top;
-    const screenY = Math.max(top, Math.min(desiredY, top + height - (CELL_H - GAP) * k));
-    // Canonical grids start at y=0. Keep their first row at the top whenever
-    // preserving the clicked position would leave empty canvas above it.
-    const y = Math.min(top, (hasFocus ? screenY : top) - focusY * k);
-    const target = d3.zoomIdentity.translate(padding, y).scale(k);
-    const selection = d3.select(viewport).interrupt();
-
-    // Layout has canonical coordinates. Rebase the camera to keep the clicked
-    // slide at its old screen position before animating into the fitted view.
-    if (clickedPosition && focus && hasFocus) {
-      const current = d3.zoomTransform(viewport);
-      selection.call(zoomBehavior.transform, d3.zoomIdentity
-        .translate(clickedPosition.x - focus.x * current.k, clickedPosition.y - focus.y * current.k)
-        .scale(current.k));
+    const top = Math.max(0, breadcrumb.bottom - rect.top) + PADDING;
+    if (!renderedItems.length) return;
+    const focus = renderedItems.find((item) => item.slide.id === state.focusSlideId);
+    let target;
+    if (clickedPosition && focus && (state.mode === "deck" || state.mode === "similar")) {
+      target = viewFor(d3.zoomTransform(viewport).k, { id: focus.slide.id, fx: 0, fy: 0 },
+        clickedPosition.x, clickedPosition.y);
+      // Don't leave empty canvas above the first row.
+      if (target.y > top) target = d3.zoomIdentity.translate(target.x, top).scale(target.k);
+    } else {
+      target = viewFor(DEFAULT_SCALE, { id: renderedItems[0].slide.id, fx: 0, fy: 0 }, PADDING, top);
     }
-    canvas.selectAll(".slide-thumb").interrupt()
-      .filter((item) => items.includes(item))
-      .style("left", (item) => `${item.x}px`)
-      .style("top", (item) => `${item.y}px`)
-      .style("opacity", 1);
-    canvas.selectAll(".slide-thumb").filter((item) => !items.includes(item)).remove();
-    // Let D3 own its transition: calling transform on a plain selection from
-    // inside a tween interrupts that very transition on the first frame.
-    selection.transition().duration(MODE_TRANSITION_MS)
-      .call(zoomBehavior.transform, target);
+    applyView(target);
   }
 
   // -- data loading -------------------------------------------------------
@@ -276,22 +390,14 @@
       if (candidates.length) items.push({ slide: candidates[0], deck });
     });
     items.sort((a, b) => b.deck.pptx_mtime - a.deck.pptx_mtime);
-    return items.map((item, i) => ({
-      ...item,
-      x: (i % POOL_COLUMNS) * CELL_W,
-      y: Math.floor(i / POOL_COLUMNS) * CELL_H,
-    }));
+    return items;
   }
 
   function searchItems() {
-    const items = state.searchOrder
+    return state.searchOrder
       .map((id) => state.slidesById.get(id))
-      .filter((entry) => entry && (state.showHidden || !entry.slide.hidden));
-    return items.map((item, i) => ({
-      ...item,
-      x: (i % POOL_COLUMNS) * CELL_W,
-      y: Math.floor(i / POOL_COLUMNS) * CELL_H,
-    }));
+      .filter((entry) => entry && (state.showHidden || !entry.slide.hidden))
+      .map((entry) => ({ ...entry }));
   }
 
   function deckItems() {
@@ -301,12 +407,7 @@
       .filter((s) => state.showHidden || !s.hidden)
       .slice()
       .sort((a, b) => a.index_in_deck - b.index_in_deck);
-    return slides.map((slide, i) => ({
-      slide,
-      deck,
-      x: (i % DECK_ROW_LENGTH) * CELL_W,
-      y: Math.floor(i / DECK_ROW_LENGTH) * CELL_H,
-    }));
+    return slides.map((slide) => ({ slide, deck }));
   }
 
   // -- rendering (pool / search / deck) --------------------------------------
@@ -330,6 +431,13 @@
 
   function renderStatic(items) {
     renderedItems = items;
+    // Periodic refreshes must not rewrap the rows: keep the anchored slide in its column.
+    const anchorIndex = layoutAnchor ? items.findIndex((it) => it.slide.id === layoutAnchor.id) : -1;
+    if (anchorIndex === -1) {
+      assignPositions(columnsFor(d3.zoomTransform(viewport).k));
+    } else {
+      assignPositions(layoutCols, (((layoutAnchor.left - anchorIndex) % layoutCols) + layoutCols) % layoutCols);
+    }
     if (state.simulation) {
       state.simulation.stop();
       state.simulation = null;
@@ -505,12 +613,10 @@
 
     const items = [sourceSlide, ...similarSlides]
       .filter((slide) => state.showHidden || !slide.hidden)
-      .map((slide, i) => ({
-      slide,
-      deck: state.deckById.get(slide.deck_id) || { id: slide.deck_id, name: "(deck)" },
-      x: (i % DECK_ROW_LENGTH) * CELL_W,
-      y: Math.floor(i / DECK_ROW_LENGTH) * CELL_H,
-    }));
+      .map((slide) => ({
+        slide,
+        deck: state.deckById.get(slide.deck_id) || { id: slide.deck_id, name: "(deck)" },
+      }));
 
     renderStatic(items);
     updateBreadcrumb();
@@ -582,17 +688,16 @@
     zoomToSlideFraction(Number(el.getAttribute("data-slide-id")), DOUBLE_CLICK_ZOOM_FRACTION);
   });
 
+  function zoomToSlide(slideId, scale) {
+    animateView(scale,
+      { id: slideId, fx: SLIDE_WIDTH / 2 / CELL_W, fy: SLIDE_HEIGHT / 2 / CELL_H },
+      viewport.clientWidth / 2, viewport.clientHeight / 2);
+  }
+
   function zoomToSlideFraction(slideId, fraction) {
-    const item = renderedItems.find((it) => it.slide.id === slideId);
-    if (!item) return;
-    const scale = Math.min(
+    zoomToSlide(slideId, Math.min(
       (viewport.clientWidth * fraction) / SLIDE_WIDTH,
-      (viewport.clientHeight * fraction) / SLIDE_HEIGHT);
-    const target = d3.zoomIdentity
-      .translate(viewport.clientWidth / 2, viewport.clientHeight / 2)
-      .scale(scale)
-      .translate(-(item.x + SLIDE_WIDTH / 2), -(item.y + SLIDE_HEIGHT / 2));
-    d3.select(viewport).interrupt().transition().duration(300).call(zoomBehavior.transform, target);
+      (viewport.clientHeight * fraction) / SLIDE_HEIGHT));
   }
 
   // -- zoomed-in slide navigation overlay (prev / next / selection toggle) ---
@@ -666,11 +771,8 @@
     const t = d3.zoomTransform(viewport);
     const screenX = t.x + current.x * t.k;
     const screenY = t.y + current.y * t.k;
-    const target = d3.zoomIdentity
-      .translate(screenX - next.x * t.k, screenY - next.y * t.k)
-      .scale(t.k);
     state.focusSlideId = next.slide.id;
-    d3.select(viewport).interrupt().transition().duration(250).call(zoomBehavior.transform, target);
+    animateView(t.k, { id: next.slide.id, fx: 0, fy: 0 }, screenX, screenY, 250);
   }
 
   zoomNavPrev.addEventListener("click", (event) => {
@@ -871,8 +973,7 @@
   // -- context menu ------------------------------------------------------------
   function setPanZoomEnabled(enabled) {
     if (enabled) {
-      d3.select(viewport).call(zoomBehavior);
-      d3.select(viewport).on("wheel.pan", handleWheelPan);
+      bindViewport();
     } else {
       d3.select(viewport).on(".zoom", null);
       d3.select(viewport).on("wheel.pan", null);
@@ -945,15 +1046,9 @@
       el = canvasNode.querySelector(`[data-slide-id="${slideId}"]`);
     }
     if (!el) return;
-    const { x, y } = d3.select(el).datum();
-    const scale = Math.max(0.2, Math.min(4,
+    zoomToSlide(slideId, Math.max(0.2, Math.min(4,
       (viewport.clientWidth - 48) / SLIDE_WIDTH,
-      (viewport.clientHeight - 120) / SLIDE_HEIGHT));
-    const transform = d3.zoomIdentity
-      .translate(viewport.clientWidth / 2, viewport.clientHeight / 2)
-      .scale(scale)
-      .translate(-x - SLIDE_WIDTH / 2, -y - SLIDE_HEIGHT / 2);
-    d3.select(viewport).transition().duration(300).call(zoomBehavior.transform, transform);
+      (viewport.clientHeight - 120) / SLIDE_HEIGHT)));
   });
 
   document.getElementById("menu-add-selection").addEventListener("click", () => {
@@ -1331,6 +1426,12 @@
     state.selection.clear();
     canvas.selectAll(".slide-thumb").attr("class", thumbClasses);
     updateSelectionUi();
+  });
+
+  window.addEventListener("resize", () => {
+    const t = d3.zoomTransform(viewport);
+    const [fx, fy] = focalPoint(null);
+    applyView(viewFor(t.k, anchorAt(fx, fy, t), fx, fy));
   });
 
   recordLocation();
