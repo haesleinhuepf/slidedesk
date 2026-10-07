@@ -259,6 +259,11 @@ class SlideProject:
         for row in rows:
             if stop_event and stop_event.is_set():
                 break
+            slide = self.slide(row["id"])
+            deck = self.deck(slide.deck_id) if slide else None
+            if slide and deck:
+                print(f"Computing text embedding: {Path(deck.pptx_path).name}, "
+                      f"slide {slide.index_in_deck + 1}")
             try:
                 vector = self._embed(_text_for_embedding(row["text"])[:1024])
             except Exception as exc:
@@ -331,6 +336,12 @@ class SlideProject:
                 if key is None or (row["model"] == self.IMAGE_EMBEDDING_MODEL
                                    and row["source_key"] == key):
                     continue
+                slide = self.slide(row["id"])
+                deck = self.deck(slide.deck_id) if slide else None
+                if slide and deck:
+                    print(f"Computing image embedding: {Path(deck.pptx_path).name}, "
+                          f"slide {slide.index_in_deck + 1}"
+                          f"{' (strip layout)' if strip else ''}")
                 try:
                     with (self.slide_image(row["id"], layout=False) if strip
                           else self.slide_image(row["id"])) as image:
