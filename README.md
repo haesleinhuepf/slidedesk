@@ -66,7 +66,7 @@ such as "image filtering" and it may find slides about "image processsing", too.
 
 * Slide images are embedded locally with [openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32). 
 
-* Advanced Search generates editable slide outlines locally with [ibm-granite/granite-4.1-3b](https://huggingface.co/ibm-granite/granite-4.1-3b). The model is downloaded on first use.
+* Advanced Search generates editable slide outlines locally with the text-generation small language model [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B). The model is downloaded on first use.
 
 The background worker stores vectors in `slidedesk.db`. 
 

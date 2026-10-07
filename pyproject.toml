@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "slidedesk"
 version = "0.1.0"
-description = "Index, browse and search PowerPoint slide decks in a folder, with a browser-based GUI."
+description = "AI-assisted browsing and re-combination of PowerPoint slide decks"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
