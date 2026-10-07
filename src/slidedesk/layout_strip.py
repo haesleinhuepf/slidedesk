@@ -155,9 +155,12 @@ def _picture_hashes(shapes) -> set:
     hashes = set()
     for shape in shapes:
         if _shape_has_image(shape):
-            if not hasattr(shape, "image") or not hasattr(shape.image, "blob"):
+            try:
+                if not hasattr(shape, "image") or not hasattr(shape.image, "blob"):
+                    continue
+                hashes.add(hashlib.sha1(shape.image.blob).hexdigest())
+            except Exception:
                 continue
-            hashes.add(hashlib.sha1(shape.image.blob).hexdigest())
         elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
             hashes |= _picture_hashes(shape.shapes)
     return hashes
@@ -166,6 +169,12 @@ def _picture_hashes(shapes) -> set:
 def _remove_pictures(shapes, hashes: set) -> None:
     for shape in list(shapes):
         if _shape_has_image(shape):
+            try:
+                if not hasattr(shape, "image") or not hasattr(shape.image, "blob"):
+                    continue
+                hashes.add(hashlib.sha1(shape.image.blob).hexdigest())
+            except Exception:
+                continue
             if hashlib.sha1(shape.image.blob).hexdigest() in hashes:
                 _remove_shape(shape)
         elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
