@@ -177,9 +177,13 @@ def _remove_pictures(shapes, hashes: set) -> None:
                 continue
             if hashlib.sha1(shape.image.blob).hexdigest() in hashes:
                 _remove_shape(shape)
-        elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
-            _remove_pictures(shape.shapes, hashes)
+            continue
 
+        try:
+            if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+                _remove_pictures(shape.shapes, hashes)
+        except NotImplementedError:
+            continue
 
 def make_strip_layout_copy(pptx_path: Path, out_path: Path) -> None:
     """Save a copy of `pptx_path` with all slides visible and master/layout decoration removed."""
