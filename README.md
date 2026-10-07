@@ -5,7 +5,7 @@ allowing you to browse everything in a touch-friendly browser GUI.
 It also has a similarity search, allowing you to rediscover slides 
 and build slide decks efficiently.
 
-![]()
+![](docs/images/slidedesk_short.gif)
 
 ## Install
 
