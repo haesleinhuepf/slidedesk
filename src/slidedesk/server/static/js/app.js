@@ -27,6 +27,9 @@
   const ZOOM_NAV_MODES = new Set(["search", "deck", "similar"]);
   const ZOOM_NAV_THRESHOLD = 0.6; // show prev/next/selection buttons once a slide fills this much of the canvas
   const DOUBLE_CLICK_ZOOM_FRACTION = 0.8;
+  const AUTO_ZOOM_THRESHOLD = 0.7;
+  const AUTO_ZOOM_TARGET = 0.95;
+  const ZOOM_IDLE_MS = 350;
 
   const state = {
     decks: [],
@@ -59,8 +62,10 @@
   let layoutShift = 0;
   let layoutAnchor = null; // { id, left }: slide and its column, kept across re-renders
   let programmaticView = false;
+  let autoZooming = false;
   let lastTransform = d3.zoomIdentity;
   let viewTimer = null;
+  let zoomIdleTimer = null;
 
   // The slides form one reflowing list: columns follow from the zoom scale and
   // the viewport width, so zooming in shows fewer slides per row.
@@ -155,6 +160,40 @@
   function interruptView() {
     if (viewTimer) viewTimer.stop();
     viewTimer = null;
+    clearTimeout(zoomIdleTimer);
+    zoomIdleTimer = null;
+    autoZooming = false;
+  }
+
+  function scheduleAutoZoom() {
+    clearTimeout(zoomIdleTimer);
+    zoomIdleTimer = setTimeout(() => {
+      zoomIdleTimer = null;
+      if (!renderedItems.length || autoZooming) return;
+
+      const transform = d3.zoomTransform(viewport);
+      if ((SLIDE_WIDTH * transform.k) / viewport.clientWidth <= AUTO_ZOOM_THRESHOLD) return;
+
+      const centerX = (viewport.clientWidth / 2 - transform.x) / transform.k;
+      const centerY = (viewport.clientHeight / 2 - transform.y) / transform.k;
+      const active = renderedItems.reduce((best, item) => {
+        const distance = Math.hypot(
+          item.x + SLIDE_WIDTH / 2 - centerX,
+          item.y + SLIDE_HEIGHT / 2 - centerY,
+        );
+        return !best || distance < best.distance ? { item, distance } : best;
+      }, null);
+      if (!active) return;
+
+      const scale = (viewport.clientWidth * AUTO_ZOOM_TARGET) / SLIDE_WIDTH;
+      animateView(
+        scale,
+        { id: active.item.slide.id, fx: SLIDE_WIDTH / 2 / CELL_W, fy: SLIDE_HEIGHT / 2 / CELL_H },
+        viewport.clientWidth / 2,
+        viewport.clientHeight / 2,
+      );
+      autoZooming = true;
+    }, ZOOM_IDLE_MS);
   }
 
   function animateView(k1, anchor, sx1, sy1, ms = 300) {
@@ -168,7 +207,10 @@
     const timer = d3.timer((elapsed) => {
       const e = d3.easeCubicInOut(Math.min(1, elapsed / ms));
       applyView(viewFor(t0.k * Math.pow(k1 / t0.k, e), anchor, sx0 + (sx1 - sx0) * e, sy0 + (sy1 - sy0) * e));
-      if (elapsed >= ms) timer.stop();
+      if (elapsed >= ms) {
+        timer.stop();
+        autoZooming = false;
+      }
     });
     viewTimer = timer;
   }
@@ -192,7 +234,8 @@
     .on("end", () => viewport.classList.remove("grabbing"))
     .on("zoom", (event) => {
       let t = event.transform;
-      if (!programmaticView && renderedItems.length && t.k !== lastTransform.k) {
+      const scaleChanged = t.k !== lastTransform.k;
+      if (!programmaticView && renderedItems.length && scaleChanged) {
         // Pinch zoom: reflow around the gesture, keeping the slide there in place.
         const [fx, fy] = focalPoint(event.sourceEvent);
         t = viewFor(t.k, anchorAt(fx, fy, lastTransform), fx, fy);
@@ -201,6 +244,7 @@
       lastTransform = t;
       canvas.style("transform", `translate(${t.x}px, ${t.y}px) scale(${t.k})`);
       updateZoomNav(t);
+      if (!programmaticView && scaleChanged && event.sourceEvent) scheduleAutoZoom();
     });
 
   function bindViewport() {
@@ -248,6 +292,7 @@
       const sy = event.clientY - rect.top;
       const delta = (event.deltaY || event.deltaX) * factor;
       applyView(viewFor(transform.k * Math.pow(2, -delta * 0.002), anchorAt(sx, sy, transform), sx, sy));
+      scheduleAutoZoom();
       return;
     }
     const next = transform.translate(-event.deltaX * factor / transform.k, -event.deltaY * factor / transform.k);
@@ -704,6 +749,7 @@
     animateView(scale,
       { id: slideId, fx: SLIDE_WIDTH / 2 / CELL_W, fy: SLIDE_HEIGHT / 2 / CELL_H },
       viewport.clientWidth / 2, viewport.clientHeight / 2);
+    scheduleAutoZoom();
   }
 
   function zoomToSlideFraction(slideId, fraction) {
