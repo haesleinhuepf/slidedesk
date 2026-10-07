@@ -3,6 +3,7 @@ from pathlib import Path
 from pptx import Presentation
 
 from slidedesk import SlideProject, scanner
+from slidedesk.convert import ConversionError
 
 
 def test_pdf_exports_mirror_source_tree_and_refresh(tmp_path, monkeypatch):
@@ -71,5 +72,62 @@ def test_scan_relocates_indexed_sidecars_without_conversion(tmp_path, monkeypatc
                                  (deck.hidden_pdf_path, ".hidden.pdf")):
             assert (tmp_path / relative).read_bytes() == suffix.encode()
             assert not source.with_suffix(suffix).exists()
+    finally:
+        project.close()
+
+
+def test_failed_conversion_is_persisted_and_not_retried(tmp_path, monkeypatch):
+    source = tmp_path / "deck.pptx"
+    Presentation().save(source)
+    calls = []
+
+    def fail_conversion(source_path, destination):
+        calls.append(source_path)
+        raise ConversionError("conversion failed")
+
+    monkeypatch.setattr(scanner, "convert_pptx_to_pdf", fail_conversion)
+    project = SlideProject(tmp_path)
+    try:
+        project.scan()
+        assert len(calls) == 1
+        row = project.conn.execute(
+            "SELECT pdf_conversion_failed FROM decks WHERE pptx_path = ?",
+            ("deck.pptx",),
+        ).fetchone()
+        assert row["pdf_conversion_failed"] == 1
+
+        project.scan()
+        assert len(calls) == 1
+    finally:
+        project.close()
+
+
+def test_strip_conversion_retries_after_delay(tmp_path, monkeypatch):
+    source = tmp_path / "deck.pptx"
+    Presentation().save(source)
+    strip_attempts = []
+    sleeps = []
+
+    def convert(source_path, destination):
+        if destination.name.endswith(".strip-layout.hidden.pdf"):
+            strip_attempts.append(source_path)
+            if len(strip_attempts) == 1:
+                raise ConversionError("temporary conversion failure")
+        destination.write_bytes(b"pdf")
+
+    monkeypatch.setattr(scanner, "convert_pptx_to_pdf", convert)
+    monkeypatch.setattr(scanner.time, "sleep", sleeps.append)
+    project = SlideProject(tmp_path)
+    try:
+        project.scan()
+
+        assert len(strip_attempts) == 2
+        assert sleeps == [0.5]
+        row = project.conn.execute(
+            "SELECT pdf_conversion_failed FROM decks WHERE pptx_path = ?",
+            ("deck.pptx",),
+        ).fetchone()
+        assert row["pdf_conversion_failed"] == 0
+        assert (project.cache_dir / "deck.strip-layout.hidden.pdf").exists()
     finally:
         project.close()

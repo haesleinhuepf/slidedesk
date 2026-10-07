@@ -143,29 +143,46 @@ def _scan_once(
                     legacy_path.rename(destination)
 
         needs_reindex = force or row is None or row["pptx_mtime"] != mtime
+        pdf_conversion_failed = bool(
+            row is not None
+            and row["pdf_conversion_failed"]
+            and row["pptx_mtime"] == mtime
+            and not force
+        )
 
-        if not pdf_path.exists() or needs_reindex:
+        if not pdf_conversion_failed and (not pdf_path.exists() or needs_reindex):
             try:
                 convert_pptx_to_pdf(pptx_path, pdf_path)
             except ConversionError as exc:
+                pdf_conversion_failed = True
                 log.warning("Skipping PDF export for %s: %s", pptx_path, exc)
 
-        if not hidden_pdf_path.exists() or needs_reindex:
+        if not pdf_conversion_failed and (
+            not hidden_pdf_path.exists() or needs_reindex
+        ):
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_pptx = Path(tmp) / pptx_path.name
                     pptx_tools.make_all_visible_copy(pptx_path, tmp_pptx)
                     convert_pptx_to_pdf(tmp_pptx, hidden_pdf_path)
             except ConversionError as exc:
+                pdf_conversion_failed = True
                 log.warning("Skipping hidden-PDF export for %s: %s", pptx_path, exc)
 
-        if not strip_pdf_path.exists() or needs_reindex:
+        if not pdf_conversion_failed and (
+            not strip_pdf_path.exists() or needs_reindex
+        ):
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_pptx = Path(tmp) / pptx_path.name
                     layout_strip.make_strip_layout_copy(pptx_path, tmp_pptx)
-                    convert_pptx_to_pdf(tmp_pptx, strip_pdf_path)
+                    try:
+                        convert_pptx_to_pdf(tmp_pptx, strip_pdf_path)
+                    except ConversionError:
+                        time.sleep(0.5)
+                        convert_pptx_to_pdf(tmp_pptx, strip_pdf_path)
             except ConversionError as exc:
+                pdf_conversion_failed = True
                 log.warning("Skipping strip-layout PDF export for %s: %s", pptx_path, exc)
 
         strip_pdf_mtime = strip_pdf_path.stat().st_mtime if strip_pdf_path.exists() else None
@@ -179,17 +196,20 @@ def _scan_once(
             if row is None:
                 cur = conn.execute(
                     "INSERT INTO decks (pptx_path, pptx_mtime, pdf_path, pdf_mtime, "
-                    "hidden_pdf_path, hidden_pdf_mtime, last_scanned) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (rel_pptx, mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime, now),
+                    "hidden_pdf_path, hidden_pdf_mtime, last_scanned, "
+                    "pdf_conversion_failed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (rel_pptx, mtime, pdf_rel, pdf_mtime, hidden_pdf_rel,
+                     hidden_pdf_mtime, now, pdf_conversion_failed),
                 )
                 deck_id = cur.lastrowid
             else:
                 deck_id = row["id"]
                 conn.execute(
                     "UPDATE decks SET pptx_mtime=?, pdf_path=?, pdf_mtime=?, "
-                    "hidden_pdf_path=?, hidden_pdf_mtime=?, last_scanned=? WHERE id=?",
-                    (mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime, now, deck_id),
+                    "hidden_pdf_path=?, hidden_pdf_mtime=?, last_scanned=?, "
+                    "pdf_conversion_failed=? WHERE id=?",
+                    (mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime,
+                     now, pdf_conversion_failed, deck_id),
                 )
             conn.execute(
                 "UPDATE decks SET strip_pdf_path=?, strip_pdf_mtime=? WHERE id=?",

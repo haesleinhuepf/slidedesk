@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS decks (
     pdf_mtime REAL,
     hidden_pdf_path TEXT,
     hidden_pdf_mtime REAL,
-    last_scanned REAL
+    last_scanned REAL,
+    pdf_conversion_failed INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS slides (
@@ -86,7 +87,11 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
     deck_columns = {row["name"] for row in conn.execute("PRAGMA table_info(decks)")}
-    for column, kind in (("strip_pdf_path", "TEXT"), ("strip_pdf_mtime", "REAL")):
+    for column, kind in (
+        ("strip_pdf_path", "TEXT"),
+        ("strip_pdf_mtime", "REAL"),
+        ("pdf_conversion_failed", "INTEGER NOT NULL DEFAULT 0"),
+    ):
         if column not in deck_columns:
             conn.execute(f"ALTER TABLE decks ADD COLUMN {column} {kind}")
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(slides)")}
