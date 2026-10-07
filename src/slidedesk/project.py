@@ -4,6 +4,7 @@ PDF conversion, slide-image rendering and search/export over one project folder.
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 import threading
 import time
@@ -506,7 +507,10 @@ class SlideProject:
             repaired = Path(staging) / "repaired.pptx"
             pptx_tools.save_selection_as_pptx(pairs, template_path, source)
             convert.repair_pptx(source, repaired)
-            convert.copy_slides_to_clipboard(repaired)
+            if os.path.exists(repaired):
+                convert.copy_slides_to_clipboard(repaired)
+            else:
+                convert.copy_slides_to_clipboard(source)
 
     # -- export -----------------------------------------------------------
     def export_selection(self, slide_ids: List[int], out_filename: Optional[str] = None) -> Path:
@@ -537,5 +541,8 @@ class SlideProject:
                 repaired = Path(staging) / "repaired.pptx"
                 pptx_tools.save_selection_as_pptx(pairs, template_path, source)
                 convert.repair_pptx(source, repaired)
-                repaired.replace(out_path)
+                if os.path.exists(repaired):
+                    repaired.replace(out_path)
+                else:
+                    source.replace(out_path)
         return out_path

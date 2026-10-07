@@ -155,6 +155,8 @@ def _picture_hashes(shapes) -> set:
     hashes = set()
     for shape in shapes:
         if _shape_has_image(shape):
+            if not hasattr(shape, "image") or not hasattr(shape.image, "blob"):
+                continue
             hashes.add(hashlib.sha1(shape.image.blob).hexdigest())
         elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
             hashes |= _picture_hashes(shape.shapes)
