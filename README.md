@@ -2,8 +2,7 @@
 
 SlideDesk indexes a folder full of `.pptx` files (and sub-folders), 
 allowing you to browse everything in a touch-friendly browser GUI.
-It also has a similarity search, allowing you to rediscover slides 
-and build slide decks efficiently.
+It also comes with a simir-slide search based on modern vision language models, allowing you to rediscover slides and build slide decks efficiently.
 
 ![](docs/images/slidedesk_short.gif)
 
