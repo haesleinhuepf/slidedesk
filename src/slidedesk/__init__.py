@@ -3,4 +3,4 @@ from .models import Deck, Slide
 from .project import SlideProject
 
 __all__ = ["SlideProject", "Deck", "Slide"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
