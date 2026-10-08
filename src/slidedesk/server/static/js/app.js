@@ -441,6 +441,8 @@
     // Startup/overview shows only each deck's first (lowest-index) visible slide.
     const items = [];
     state.decks.forEach((deck) => {
+      // Decks whose slides are all hidden never appear in the pool.
+      if (deck.slides.every((s) => s.hidden)) return;
       const candidates = deck.slides
         .filter((s) => state.showHidden || !s.hidden)
         .sort((a, b) => a.index_in_deck - b.index_in_deck);
