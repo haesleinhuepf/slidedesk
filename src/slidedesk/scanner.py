@@ -38,6 +38,28 @@ def _rel(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def export_hidden_pdf(pptx_path: Path, out_path: Path) -> None:
+    """Export a PDF of the deck with all hidden slides made visible."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_pptx = Path(tmp) / pptx_path.name
+        pptx_tools.make_all_visible_copy(pptx_path, tmp_pptx)
+        convert_pptx_to_pdf(tmp_pptx, out_path)
+
+
+def export_strip_pdf(pptx_path: Path, out_path: Path) -> None:
+    """Export the grayscale strip-layout PDF (retrying once on failure)."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_pptx = Path(tmp) / pptx_path.name
+        layout_strip.make_strip_layout_copy(pptx_path, tmp_pptx)
+        try:
+            convert_pptx_to_pdf(tmp_pptx, out_path)
+        except ConversionError:
+            time.sleep(0.5)
+            convert_pptx_to_pdf(tmp_pptx, out_path)
+
+
 def _index_slides(conn, deck_id: int, pptx_path: Path) -> None:
     prs = Presentation(str(pptx_path))
     overrides = {
@@ -161,10 +183,7 @@ def _scan_once(
             not hidden_pdf_path.exists() or needs_reindex
         ):
             try:
-                with tempfile.TemporaryDirectory() as tmp:
-                    tmp_pptx = Path(tmp) / pptx_path.name
-                    pptx_tools.make_all_visible_copy(pptx_path, tmp_pptx)
-                    convert_pptx_to_pdf(tmp_pptx, hidden_pdf_path)
+                export_hidden_pdf(pptx_path, hidden_pdf_path)
             except ConversionError as exc:
                 pdf_conversion_failed = True
                 log.warning("Skipping hidden-PDF export for %s: %s", pptx_path, exc)
@@ -173,14 +192,7 @@ def _scan_once(
             not strip_pdf_path.exists() or needs_reindex
         ):
             try:
-                with tempfile.TemporaryDirectory() as tmp:
-                    tmp_pptx = Path(tmp) / pptx_path.name
-                    layout_strip.make_strip_layout_copy(pptx_path, tmp_pptx)
-                    try:
-                        convert_pptx_to_pdf(tmp_pptx, strip_pdf_path)
-                    except ConversionError:
-                        time.sleep(0.5)
-                        convert_pptx_to_pdf(tmp_pptx, strip_pdf_path)
+                export_strip_pdf(pptx_path, strip_pdf_path)
             except ConversionError as exc:
                 pdf_conversion_failed = True
                 log.warning("Skipping strip-layout PDF export for %s: %s", pptx_path, exc)

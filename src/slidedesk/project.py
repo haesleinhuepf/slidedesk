@@ -19,7 +19,7 @@ from pptx.slide import Slide as PptxSlide
 
 from . import convert, db, embeddings, image_embeddings, images, pptx_tools
 from .models import Deck, Slide
-from .scanner import BackgroundScanner, scan_once
+from .scanner import BackgroundScanner, export_hidden_pdf, export_strip_pdf, scan_once
 
 log = logging.getLogger(__name__)
 
@@ -443,25 +443,51 @@ class SlideProject:
             raise KeyError(f"No such deck: {slide.deck_id}")
 
         if not layout:
-            if not deck.strip_pdf_path:
-                raise FileNotFoundError("strip-layout export not available yet")
+            pdf_path = self._ensure_export(deck, "strip")
             return images.render_page(
-                self.folder / deck.strip_pdf_path, slide.index_in_deck + 1,
-                self.cache_dir, grayscale=True,
+                pdf_path, slide.index_in_deck + 1, self.cache_dir, grayscale=True,
             )
 
         if slide.visible_pdf_page is None:
-            if not deck.hidden_pdf_path:
-                raise FileNotFoundError("hidden.pdf export not available yet")
-            pdf_path = self.folder / deck.hidden_pdf_path
+            pdf_path = self._ensure_export(deck, "hidden")
             page = slide.index_in_deck + 1
         else:
-            if not deck.pdf_path:
-                raise FileNotFoundError("pdf export not available yet")
-            pdf_path = self.folder / deck.pdf_path
+            pdf_path = self._ensure_export(deck, "pdf")
             page = slide.visible_pdf_page
 
         return images.render_page(pdf_path, page, self.cache_dir)
+
+    def _ensure_export(self, deck: Deck, kind: str) -> Path:
+        """Return the path of the deck's PDF export, creating it if missing.
+
+        `kind` is one of "pdf", "hidden" or "strip". Uses the same export
+        functions and cache location as the scanner and records the result.
+        """
+        suffix, column = {
+            "pdf": (".pdf", "pdf"),
+            "hidden": (".hidden.pdf", "hidden_pdf"),
+            "strip": (".strip-layout.hidden.pdf", "strip_pdf"),
+        }[kind]
+        pptx_path = self.folder / deck.pptx_path
+        out_path = (self.cache_dir / deck.pptx_path).with_suffix(suffix)
+        if not out_path.exists():
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if kind == "pdf":
+                    convert.convert_pptx_to_pdf(pptx_path, out_path)
+                elif kind == "hidden":
+                    export_hidden_pdf(pptx_path, out_path)
+                else:
+                    export_strip_pdf(pptx_path, out_path)
+            except convert.ConversionError as exc:
+                raise FileNotFoundError(f"{kind} export could not be created: {exc}") from exc
+            rel = out_path.relative_to(self.folder).as_posix()
+            with self._conn_lock, self.conn:
+                self.conn.execute(
+                    f"UPDATE decks SET {column}_path=?, {column}_mtime=? WHERE id=?",
+                    (rel, out_path.stat().st_mtime, deck.id),
+                )
+        return out_path
 
     def slide_pptx_object(self, slide_id: int) -> PptxSlide:
         """Open the source .pptx and return the python-pptx Slide object."""

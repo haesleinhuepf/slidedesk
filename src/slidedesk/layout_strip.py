@@ -206,7 +206,7 @@ def make_strip_layout_copy(pptx_path: Path, out_path: Path) -> None:
 
     for slide in presentation.slides:
         set_slide_hidden(slide, False)
-        _remove_pictures(slide.shapes, master_images)
+        #_remove_pictures(slide.shapes, master_images)
         _set_background_white(slide)
         for shape in slide.shapes:
             _set_shape_text_black(shape)
