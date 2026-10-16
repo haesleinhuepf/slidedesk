@@ -1,48 +1,60 @@
-from pathlib import Path
+import sys
+from types import SimpleNamespace
 
+import pytest
 from PIL import Image
+from pptx import Presentation
 
 from slidedesk import images
 
 
-def test_read_pdf_bytes_caches_recent_file_version(tmp_path, monkeypatch):
-    pdf_path = tmp_path / "deck.pdf"
-    pdf_path.write_bytes(b"first PDF")
-    reads = []
-    original_read_bytes = Path.read_bytes
-
-    def track_read_bytes(path):
-        reads.append(path)
-        return original_read_bytes(path)
-
-    monkeypatch.setattr(Path, "read_bytes", track_read_bytes)
-
-    assert images.read_pdf_bytes(pdf_path) == b"first PDF"
-    assert images.read_pdf_bytes(pdf_path) == b"first PDF"
-    assert reads == [pdf_path]
-
-    pdf_path.write_bytes(b"updated PDF")
-    assert images.read_pdf_bytes(pdf_path) == b"updated PDF"
-    assert reads == [pdf_path, pdf_path]
-    assert images._read_pdf_bytes_cached.cache_info().maxsize == 20
+@pytest.fixture
+def deck(tmp_path):
+    path = tmp_path / "deck.pptx"
+    prs = Presentation()
+    for _ in range(2):
+        prs.slides.add_slide(prs.slide_layouts[6])
+    prs.slides[1]._element.set("show", "0")
+    prs.save(path)
+    images.clear_cache()
+    yield path
+    images.clear_cache()
 
 
-def test_render_page_converts_cached_pdf_bytes(tmp_path, monkeypatch):
-    pdf_path = tmp_path / "deck.pdf"
-    pdf_path.write_bytes(b"PDF content")
-    converted = []
-    rendered_image = Image.new("RGB", (2, 3))
+def fake_render(monkeypatch, calls):
+    def render_slides(prs):
+        calls.append([s._element.get("show") for s in prs.slides])
+        return [Image.new("RGB", (4, 4), "red") for _ in prs.slides]
 
-    def convert_from_bytes(pdf_bytes, **kwargs):
-        converted.append((pdf_bytes, kwargs))
-        return [rendered_image]
+    monkeypatch.setitem(sys.modules, "render_pptx", SimpleNamespace(render_slides=render_slides))
 
-    monkeypatch.setattr(images, "convert_from_bytes", convert_from_bytes)
 
-    result = images.render_page(pdf_path, 2, tmp_path / "cache")
+def test_render_slide_image_renders_hidden_slides_and_caches_pngs(deck, monkeypatch):
+    calls = []
+    fake_render(monkeypatch, calls)
 
-    assert result is rendered_image
-    assert converted == [
-        (b"PDF content", {"first_page": 2, "last_page": 2})
-    ]
-    assert list((tmp_path / "cache").glob("*.png"))
+    first = images.render_slide_image(deck, 0, deck.parent / "cache")
+    second = images.render_slide_image(deck, 1, deck.parent / "cache")
+
+    assert first.size == second.size == (4, 4)
+    assert first is not second
+    assert calls == [[None, None]]
+    assert len(list((deck.parent / "cache").glob("*.png"))) == 2
+    assert not list(deck.parent.glob("*.pdf"))
+
+    images.clear_cache()
+    again = images.render_slide_image(deck, 0, deck.parent / "cache")
+    assert again.size == (4, 4)
+    assert calls == [[None, None]]
+
+
+def test_render_slide_image_strip_is_grayscale(deck, monkeypatch):
+    fake_render(monkeypatch, [])
+    pixel = images.render_slide_image(deck, 0, deck.parent / "cache", strip=True).getpixel((0, 0))
+    assert pixel[0] == pixel[1] == pixel[2]
+
+
+def test_render_slide_image_rejects_missing_slide(deck, monkeypatch):
+    fake_render(monkeypatch, [])
+    with pytest.raises(ValueError):
+        images.render_slide_image(deck, 5, deck.parent / "cache")

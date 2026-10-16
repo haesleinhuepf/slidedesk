@@ -1,5 +1,5 @@
 """The unified slidedesk Python API: `SlideProject` ties together indexing,
-PDF conversion, slide-image rendering and search/export over one project folder.
+slide-image rendering and search/export over one project folder.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from pptx.slide import Slide as PptxSlide
 
 from . import convert, db, embeddings, image_embeddings, images, pptx_tools
 from .models import Deck, Slide
-from .scanner import BackgroundScanner, export_hidden_pdf, export_strip_pdf, scan_once
+from .scanner import BackgroundScanner, scan_once
 
 log = logging.getLogger(__name__)
 
@@ -93,26 +93,15 @@ class SlideProject:
         scan_once(self, stop_event=stop_event)
     
     def refresh_deck(self, deck_id: int) -> None:
-        """Delete a deck's PDFs, PNGs and embeddings, then rescan it from scratch."""
+        """Delete a deck's cached PNGs and embeddings, then rescan it from scratch."""
         deck = self.deck(deck_id)
         if deck is None:
             return
         with self._scan_lock:
             slide_ids = [s.id for s in self.slides(deck_id)]
-            pdfs = [self.folder / p for p in (deck.pdf_path, deck.hidden_pdf_path, deck.strip_pdf_path) if p]
-            for pdf in pdfs:
-                if not pdf.is_file():
-                    continue
-                for page in range(1, len(slide_ids) + 1):
-                    try:
-                        (self.cache_dir / f"{images._cache_key(pdf, page)}.png").unlink(missing_ok=True)
-                    except OSError as exc:
-                        log.warning("Could not delete cached PNG for %s: %s", pdf, exc)
-                try:
-                    pdf.unlink()
-                except OSError as exc:
-                    log.warning("Could not delete %s: %s", pdf, exc)
-            images._read_pdf_bytes_cached.cache_clear()
+            pptx_path = self.folder / deck.pptx_path
+            if pptx_path.is_file():
+                images.delete_cached(pptx_path, len(slide_ids), self.cache_dir)
             with self._conn_lock, self.conn:
                 for table in ("slide_embeddings", "slide_image_embeddings",
                               "slide_strip_image_embeddings"):
@@ -285,27 +274,19 @@ class SlideProject:
         return count
 
     def _image_source_key(self, slide_id: int, strip: bool = False) -> Optional[str]:
-        """Identify the rendered source, including changes to either PDF export."""
+        """Identify the rendered source, including changes to the .pptx file."""
         slide = self.slide(slide_id)
         if slide is None:
             return None
         deck = self.deck(slide.deck_id)
-        if deck is None or not (self.folder / deck.pptx_path).is_file():
-            return None
-        if strip:
-            pdf = deck.strip_pdf_path
-        else:
-            pdf = deck.hidden_pdf_path if slide.visible_pdf_page is None else deck.pdf_path
-        if not pdf:
+        if deck is None:
             return None
         try:
-            stat = (self.folder / pdf).stat()
-            pptx_stat = (self.folder / deck.pptx_path).stat()
+            stat = (self.folder / deck.pptx_path).stat()
         except OSError:
             return None
-        page = None if strip else slide.visible_pdf_page
-        return repr((pdf, stat.st_mtime_ns, stat.st_size, pptx_stat.st_mtime_ns,
-                     slide.index_in_deck, page))
+        return repr((deck.pptx_path, stat.st_mtime_ns, stat.st_size,
+                     slide.index_in_deck, strip))
 
     def embed_images_pending(self, limit: int = 20, stop_event=None) -> int:
         """Cache all renderable slides, including hidden slides and empty text.
@@ -431,9 +412,9 @@ class SlideProject:
 
     # -- rendering --------------------------------------------------------
     def slide_image(self, slide_id: int, layout: bool = True) -> Image.Image:
-        """Render the given slide to a PIL Image, using the correct PDF export.
+        """Render the given slide directly from its .pptx to a PIL Image.
 
-        With `layout=False`, the grayscale strip-layout export is used.
+        With `layout=False`, the grayscale strip-layout rendering is used.
         """
         slide = self.slide(slide_id)
         if slide is None:
@@ -441,54 +422,9 @@ class SlideProject:
         deck = self.deck(slide.deck_id)
         if deck is None:
             raise KeyError(f"No such deck: {slide.deck_id}")
-
-        if not layout:
-            pdf_path = self._ensure_export(deck, "strip")
-            return images.render_page(
-                pdf_path, slide.index_in_deck + 1, self.cache_dir, grayscale=True,
-            )
-
-        if slide.visible_pdf_page is None:
-            pdf_path = self._ensure_export(deck, "hidden")
-            page = slide.index_in_deck + 1
-        else:
-            pdf_path = self._ensure_export(deck, "pdf")
-            page = slide.visible_pdf_page
-
-        return images.render_page(pdf_path, page, self.cache_dir)
-
-    def _ensure_export(self, deck: Deck, kind: str) -> Path:
-        """Return the path of the deck's PDF export, creating it if missing.
-
-        `kind` is one of "pdf", "hidden" or "strip". Uses the same export
-        functions and cache location as the scanner and records the result.
-        """
-        suffix, column = {
-            "pdf": (".pdf", "pdf"),
-            "hidden": (".hidden.pdf", "hidden_pdf"),
-            "strip": (".strip-layout.hidden.pdf", "strip_pdf"),
-        }[kind]
-        pptx_path = self.folder / deck.pptx_path
-        out_path = (self.cache_dir / deck.pptx_path).with_suffix(suffix)
-        if not out_path.exists():
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                if kind == "pdf":
-                    convert.convert_pptx_to_pdf(pptx_path, out_path)
-                elif kind == "hidden":
-                    export_hidden_pdf(pptx_path, out_path)
-                else:
-                    export_strip_pdf(pptx_path, out_path)
-            except convert.ConversionError as exc:
-                raise FileNotFoundError(f"{kind} export could not be created: {exc}") from exc
-            rel = out_path.relative_to(self.folder).as_posix()
-            with self._conn_lock, self.conn:
-                self.conn.execute(
-                    f"UPDATE decks SET {column}_path=?, {column}_mtime=? WHERE id=?",
-                    (rel, out_path.stat().st_mtime, deck.id),
-                )
-        return out_path
-
+        return images.render_slide_image(
+            self.folder / deck.pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout
+        )
     def slide_pptx_object(self, slide_id: int) -> PptxSlide:
         """Open the source .pptx and return the python-pptx Slide object."""
         slide = self.slide(slide_id)

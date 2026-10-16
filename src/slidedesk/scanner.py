@@ -1,10 +1,7 @@
-"""Folder scanning: find .pptx files, make sure .pdf / .hidden.pdf exports
-exist and are up to date, and (re)index slide text/hidden flags into the DB.
-"""
+"""Folder scanning: find .pptx files and (re)index slide text/hidden flags into the DB."""
 from __future__ import annotations
 
 import logging
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -12,9 +9,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pptx import Presentation
 
-from . import layout_strip, pptx_tools
-from .convert import ConversionError, convert_pptx_to_pdf
-from . import convert
+from . import pptx_tools
 
 if TYPE_CHECKING:
     from .project import SlideProject
@@ -36,28 +31,6 @@ def _iter_pptx_files(root: Path):
 
 def _rel(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
-
-
-def export_hidden_pdf(pptx_path: Path, out_path: Path) -> None:
-    """Export a PDF of the deck with all hidden slides made visible."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_pptx = Path(tmp) / pptx_path.name
-        pptx_tools.make_all_visible_copy(pptx_path, tmp_pptx)
-        convert_pptx_to_pdf(tmp_pptx, out_path)
-
-
-def export_strip_pdf(pptx_path: Path, out_path: Path) -> None:
-    """Export the grayscale strip-layout PDF (retrying once on failure)."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_pptx = Path(tmp) / pptx_path.name
-        layout_strip.make_strip_layout_copy(pptx_path, tmp_pptx)
-        try:
-            convert_pptx_to_pdf(tmp_pptx, out_path)
-        except ConversionError:
-            time.sleep(0.5)
-            convert_pptx_to_pdf(tmp_pptx, out_path)
 
 
 def _index_slides(conn, deck_id: int, pptx_path: Path) -> None:
@@ -145,89 +118,22 @@ def _scan_once(
                 "SELECT * FROM decks WHERE pptx_path = ?", (rel_pptx,)
             ).fetchone()
 
-        pdf_path = (project.cache_dir / rel_pptx).with_suffix(".pdf")
-        hidden_pdf_path = (project.cache_dir / rel_pptx).with_suffix(".hidden.pdf")
-        strip_pdf_path = (project.cache_dir / rel_pptx).with_suffix(".strip-layout.hidden.pdf")
-        strip_pdf_rel = _rel(root, strip_pdf_path)
-        pdf_rel = _rel(root, pdf_path)
-        hidden_pdf_rel = _rel(root, hidden_pdf_path)
-        pdf_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Relocate previously indexed sidecar exports, preserving their mtimes.
-        if row is not None:
-            for column, destination, suffix in (
-                ("pdf_path", pdf_path, ".pdf"),
-                ("hidden_pdf_path", hidden_pdf_path, ".hidden.pdf"),
-            ):
-                legacy_path = pptx_path.with_suffix(suffix)
-                if (row[column] and root / row[column] == legacy_path
-                        and legacy_path.is_file() and not destination.exists()):
-                    legacy_path.rename(destination)
-
         needs_reindex = force or row is None or row["pptx_mtime"] != mtime
-        pdf_conversion_failed = bool(
-            row is not None
-            and row["pdf_conversion_failed"]
-            and row["pptx_mtime"] == mtime
-            and not force
-        )
-
-        if not pdf_conversion_failed and (not pdf_path.exists() or needs_reindex):
-            try:
-                convert_pptx_to_pdf(pptx_path, pdf_path)
-            except ConversionError as exc:
-                pdf_conversion_failed = True
-                log.warning("Skipping PDF export for %s: %s", pptx_path, exc)
-
-        if not pdf_conversion_failed and (
-            not hidden_pdf_path.exists() or needs_reindex
-        ):
-            try:
-                export_hidden_pdf(pptx_path, hidden_pdf_path)
-            except ConversionError as exc:
-                pdf_conversion_failed = True
-                log.warning("Skipping hidden-PDF export for %s: %s", pptx_path, exc)
-
-        if not pdf_conversion_failed and (
-            not strip_pdf_path.exists() or needs_reindex
-        ):
-            try:
-                export_strip_pdf(pptx_path, strip_pdf_path)
-            except ConversionError as exc:
-                pdf_conversion_failed = True
-                log.warning("Skipping strip-layout PDF export for %s: %s", pptx_path, exc)
-
-        strip_pdf_mtime = strip_pdf_path.stat().st_mtime if strip_pdf_path.exists() else None
-        pdf_mtime = pdf_path.stat().st_mtime if pdf_path.exists() else None
-        hidden_pdf_mtime = (
-            hidden_pdf_path.stat().st_mtime if hidden_pdf_path.exists() else None
-        )
         now = time.time()
 
         with project._conn_lock, conn:
             if row is None:
                 cur = conn.execute(
-                    "INSERT INTO decks (pptx_path, pptx_mtime, pdf_path, pdf_mtime, "
-                    "hidden_pdf_path, hidden_pdf_mtime, last_scanned, "
-                    "pdf_conversion_failed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (rel_pptx, mtime, pdf_rel, pdf_mtime, hidden_pdf_rel,
-                     hidden_pdf_mtime, now, pdf_conversion_failed),
+                    "INSERT INTO decks (pptx_path, pptx_mtime, last_scanned) VALUES (?, ?, ?)",
+                    (rel_pptx, mtime, now),
                 )
                 deck_id = cur.lastrowid
             else:
                 deck_id = row["id"]
                 conn.execute(
-                    "UPDATE decks SET pptx_mtime=?, pdf_path=?, pdf_mtime=?, "
-                    "hidden_pdf_path=?, hidden_pdf_mtime=?, last_scanned=?, "
-                    "pdf_conversion_failed=? WHERE id=?",
-                    (mtime, pdf_rel, pdf_mtime, hidden_pdf_rel, hidden_pdf_mtime,
-                     now, pdf_conversion_failed, deck_id),
+                    "UPDATE decks SET pptx_mtime=?, last_scanned=? WHERE id=?",
+                    (mtime, now, deck_id),
                 )
-            conn.execute(
-                "UPDATE decks SET strip_pdf_path=?, strip_pdf_mtime=? WHERE id=?",
-                (strip_pdf_rel, strip_pdf_mtime, deck_id),
-            )
-
             if needs_reindex:
                 _index_slides(conn, deck_id, pptx_path)
             conn.commit()
@@ -289,19 +195,16 @@ class BackgroundScanner:
 
     def _run(self) -> None:
         status = self.project._status
-        try:
-            while not self._stop_event.is_set():
-                status["running"] = True
-                status["last_run_started"] = time.time()
-                status["error"] = None
-                try:
-                    self.project.scan(stop_event=self._stop_event)
-                    self.project.embed_pending(stop_event=self._stop_event)
-                except Exception as exc:  # keep the loop alive across transient errors
-                    log.exception("Scan failed")
-                    status["error"] = str(exc)
-                status["last_run_finished"] = time.time()
-                status["running"] = False
-                self._stop_event.wait(self.interval)
-        finally:
-            convert.shutdown()
+        while not self._stop_event.is_set():
+            status["running"] = True
+            status["last_run_started"] = time.time()
+            status["error"] = None
+            try:
+                self.project.scan(stop_event=self._stop_event)
+                self.project.embed_pending(stop_event=self._stop_event)
+            except Exception as exc:  # keep the loop alive across transient errors
+                log.exception("Scan failed")
+                status["error"] = str(exc)
+            status["last_run_finished"] = time.time()
+            status["running"] = False
+            self._stop_event.wait(self.interval)

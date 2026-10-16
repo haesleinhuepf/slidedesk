@@ -65,9 +65,9 @@ def test_missing_visibility_target(project, url):
 def test_visibility_does_not_change_render_source(project, monkeypatch):
     from slidedesk import images
 
-    monkeypatch.setattr(images, "render_page", lambda path, page, cache: (path.name, page))
+    monkeypatch.setattr(images, "render_slide_image", lambda path, index, cache, strip=False: (path.name, index, strip))
     first, second = project.slides(1)
     project.set_slide_hidden(first.id, True)
     project.set_slide_hidden(second.id, False)
-    assert project.slide_image(first.id) == ("deck.pdf", 1)
-    assert project.slide_image(second.id) == ("deck.hidden.pdf", 2)
+    assert project.slide_image(first.id) == ("deck.pptx", 0, False)
+    assert project.slide_image(second.id) == ("deck.pptx", 1, False)

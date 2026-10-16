@@ -17,12 +17,8 @@ pip install slidedesk
 ### Additional requirements
 
 * Works on Windows only
-* Requires Microsoft PowerPoint installed
-* Requires [Poppler](https://poppler.freedesktop.org/). You can install poppler like this
-
-```
-conda install poppler
-```
+* Requires Microsoft PowerPoint installed (used for copying slides to the clipboard and re-saving exports)
+* Slide images are rendered directly from `.pptx` files by [render-pptx](https://pypi.org/project/render-pptx/); no PDF export or Poppler is needed
 
 ## Usage
 
