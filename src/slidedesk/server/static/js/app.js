@@ -470,8 +470,18 @@
   }
 
   // -- rendering (pool / search / deck) --------------------------------------
+  // The deck's modification time in the URL lets the browser cache images safely.
   function slideImageUrl(id) {
-    return `/api/slides/${id}/image${state.showLayout ? "" : "?layout=false"}`;
+    const params = new URLSearchParams();
+    const deck = state.slidesById.get(id)?.deck;
+    if (deck) params.set("v", deck.pptx_mtime);
+    if (!state.showLayout) params.set("layout", "false");
+    return `/api/slides/${id}/image?${params}`;
+  }
+
+  function slideImageTag(id, attrs = "") {
+    const url = slideImageUrl(id);
+    return `<img loading="lazy" decoding="async" src="${url}" data-src="${url}" ${attrs} />`;
   }
 
   function thumbClasses(item) {
@@ -485,151 +495,29 @@
   function thumbInnerHTML(item) {
     const badge = item.slide.hidden ? '<span class="badge">hidden</span>' : "";
     const label = `<span class="deck-label">${escapeHtml(item.deck.name)} #${item.slide.index_in_deck + 1} / ${item.deck.slides.length}</span>`;
-    return `<img data-src="${slideImageUrl(item.slide.id)}" alt="slide ${item.slide.index_in_deck + 1}" />${badge}${label}`;
+    return `${slideImageTag(item.slide.id, `alt="slide ${item.slide.index_in_deck + 1}"`)}${badge}${label}`;
   }
 
-  // Thumbnails are loaded by a polling loop: an attempt is abandoned after the timeout
-  // and retried on a later tick, as long as the slide is still on screen. Images are
-  // fetched with cache: "no-store" and shown via object URLs instead of setting <img src>
-  // to the API URL: after aborted loads, Chrome held <img> requests for some URLs without
-  // ever sending them, while fetching the same image bypassing the cache succeeded at once.
-  // Stay below the browser's 6 connections per host so status polls are not queued.
-  const IMAGE_LOAD_TIMEOUT_MS = 15000;
-  const IMAGE_LOOP_INTERVAL_MS = 200;
-  const MAX_CONCURRENT_IMAGE_LOADS = 4;
-  const IMAGE_REPORT_INTERVAL_MS = 2000;
-  const IMAGE_MAX_BACKOFF_MS = 5000;
-  const IMAGE_ERROR_RETRY_MS = 5000;
-  // maxLagMs: worst delay of the loading loop beyond its interval (main thread busy).
-  const imageStats = { timeouts: 0, lastReport: 0, lastTick: 0, maxLagMs: 0, maxLoopMs: 0 };
+  // Slide images are plain lazy <img> elements. While a slide is not rendered yet the
+  // server answers 202, which fails the <img>; it is then reloaded with growing delays
+  // for as long as it is part of the page.
+  const IMAGE_RETRY_MAX_DELAY_MS = 5000;
 
-  // Identifies this page load in the server log: tabs to the same server share the
-  // browser's connections per host, so several active tabs can starve image loads.
-  const imageClientId = Math.random().toString(36).slice(2, 8);
-
-  function reportImageStatus(payload) {
-    fetch("/api/image-status", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client: imageClientId, ...payload }),
-      keepalive: true,
-    }).catch(() => {});
+  function retryImage(event) {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement) || !img.dataset.src) return;
+    const attempt = Number(img.dataset.attempt || 0) + 1;
+    img.dataset.attempt = attempt;
+    setTimeout(() => {
+      if (!img.isConnected) return;
+      const url = new URL(img.dataset.src, window.location.href);
+      url.searchParams.set("attempt", attempt);
+      img.src = url.href;
+    }, Math.min(500 * attempt, IMAGE_RETRY_MAX_DELAY_MS));
   }
 
-  function slideIdOf(img) {
-    const el = img.closest(".slide-thumb");
-    return el ? Number(el.dataset.slideId) : null;
-  }
-
-  // waited_ms far above the timeout means the main thread was blocked; connected=false
-  // means the <img> was replaced by a re-render; status is the HTTP status (0: no response).
-  function imageReport(event, img, startedAt, extra = {}) {
-    return {
-      event,
-      slide_id: slideIdOf(img),
-      attempts: Number(img.dataset.attempts),
-      layout: !img.dataset.src.includes("layout=false"),
-      waited_ms: Math.round(performance.now() - startedAt),
-      connected: img.isConnected,
-      ...extra,
-    };
-  }
-
-  function startImageLoad(img) {
-    img.dataset.loading = "1";
-    img.dataset.attempts = (Number(img.dataset.attempts) || 0) + 1;
-    const startedAt = performance.now();
-    const controller = new AbortController();
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, IMAGE_LOAD_TIMEOUT_MS);
-    let status = 0;
-    const fail = (error) => {
-      clearTimeout(timer);
-      delete img.dataset.loading;
-      if (timedOut) {
-        const backoff = Math.min(IMAGE_LOAD_TIMEOUT_MS * Number(img.dataset.attempts), IMAGE_MAX_BACKOFF_MS);
-        img.dataset.retryAt = Date.now() + backoff;
-        imageStats.timeouts += 1;
-        reportImageStatus(imageReport("timeout", img, startedAt, { status }));
-      } else {
-        img.dataset.retryAt = Date.now() + IMAGE_ERROR_RETRY_MS;
-        reportImageStatus(imageReport("error", img, startedAt, { status, message: String(error) }));
-      }
-    };
-    fetch(img.dataset.src, { cache: "no-store", signal: controller.signal })
-      .then((res) => {
-        status = res.status;
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.blob();
-      })
-      .then((blob) => new Promise((resolve, reject) => {
-        const url = URL.createObjectURL(blob);
-        const done = (ok) => {
-          img.removeEventListener("load", onLoad);
-          img.removeEventListener("error", onError);
-          URL.revokeObjectURL(url); // the decoded image stays displayed
-          if (ok) resolve();
-          else reject(new Error("image could not be decoded"));
-        };
-        const onLoad = () => done(true);
-        const onError = () => done(false);
-        img.addEventListener("load", onLoad);
-        img.addEventListener("error", onError);
-        img.src = url;
-      }))
-      .then(() => {
-        clearTimeout(timer);
-        delete img.dataset.loading;
-        img.dataset.loaded = "1";
-      })
-      .catch(fail);
-  }
-
-  function loadVisibleImages() {
-    const tickStart = performance.now();
-    if (imageStats.lastTick) {
-      const lag = tickStart - imageStats.lastTick - IMAGE_LOOP_INTERVAL_MS;
-      imageStats.maxLagMs = Math.max(imageStats.maxLagMs, Math.round(lag));
-    }
-    imageStats.lastTick = tickStart;
-    const all = canvas.node().querySelectorAll(".slide-thumb img[data-src]");
-    const pending = canvas.node().querySelectorAll(".slide-thumb img[data-src]:not([data-loaded])");
-    if (!pending.length) return;
-    let active = canvas.node().querySelectorAll(".slide-thumb img[data-loading]").length;
-    const view = viewport.getBoundingClientRect();
-    let onScreen = 0;
-    // Least-attempted first, so slides that keep timing out don't starve the others.
-    const queue = Array.from(pending).sort((a, b) => (Number(a.dataset.attempts) || 0) - (Number(b.dataset.attempts) || 0));
-    const now = Date.now();
-    for (const img of queue) {
-      const r = img.getBoundingClientRect();
-      if (r.right < view.left || r.left > view.right || r.bottom < view.top || r.top > view.bottom) continue;
-      onScreen += 1;
-      if (active >= MAX_CONCURRENT_IMAGE_LOADS || img.dataset.loading) continue;
-      if (now < Number(img.dataset.retryAt || 0)) continue;
-      startImageLoad(img);
-      active += 1;
-    }
-    imageStats.maxLoopMs = Math.max(imageStats.maxLoopMs, Math.round(performance.now() - tickStart));
-    if (onScreen && now - imageStats.lastReport >= IMAGE_REPORT_INTERVAL_MS) {
-      imageStats.lastReport = now;
-      reportImageStatus({
-        event: "summary",
-        on_screen: onScreen,
-        loading: active,
-        loaded: all.length - pending.length,
-        timeouts: imageStats.timeouts,
-        thumbs: all.length,
-        max_lag_ms: imageStats.maxLagMs,
-        max_loop_ms: imageStats.maxLoopMs,
-      });
-      imageStats.maxLagMs = 0;
-      imageStats.maxLoopMs = 0;
-    }
-  }
+  // <img> error events do not bubble, so listen in the capture phase.
+  canvasNode.addEventListener("error", retryImage, true);
 
   function renderStatic(items) {
     renderedItems = items;
@@ -1042,6 +930,7 @@
   }
 
   const selectionList = document.getElementById("selected-slides");
+  selectionList.addEventListener("error", retryImage, true);
   let draggedSlideId = null;
   let selectionPressTimer = null;
   let selectionPressStart = null;
@@ -1061,8 +950,11 @@
       const { slide, deck } = state.slidesById.get(id);
       const label = `${i + 1}. ${deck.name} #${slide.index_in_deck + 1} / ${deck.slides.length}`;
       this.setAttribute("aria-label", label);
-      const markup = `<img loading="lazy" draggable="false" src="${slideImageUrl(id)}" alt="" /><span>${escapeHtml(label)}</span>`;
-      if (this.innerHTML !== markup) this.innerHTML = markup;
+      // Rewriting identical markup would recreate the <img> and reload it.
+      const markup = `${slideImageTag(id, 'draggable="false" alt=""')}<span>${escapeHtml(label)}</span>`;
+      if (this.__markup === markup) return;
+      this.__markup = markup;
+      this.innerHTML = markup;
     });
     cards.order();
   }
@@ -1648,7 +1540,6 @@
   pollScanStatus();
   pollEmbeddingStatus();
   setInterval(loadDecks, 5000);
-  setInterval(loadVisibleImages, IMAGE_LOOP_INTERVAL_MS);
   setInterval(pollScanStatus, 2000);
   setInterval(pollEmbeddingStatus, 2000);
 })();

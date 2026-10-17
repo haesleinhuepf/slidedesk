@@ -86,6 +86,7 @@ class SlideProject:
         self._export_lock = threading.Lock()
         self._export_number = 0
         self._image_embedding_lock = threading.Lock()
+        self._renderer = images.BackgroundRenderer(self.cache_dir)
 
     # -- indexing -----------------------------------------------------
     def scan(self, stop_event: Optional[threading.Event] = None) -> None:
@@ -128,6 +129,8 @@ class SlideProject:
         print("Closing SlideDesk project...")
         print("Stopping background scan...")
         self.stop_background_scan()
+        print("Stopping slide rendering...")
+        self._renderer.stop()
         convert.shutdown()
         print("Closing database connection...")
         self.conn.close()
@@ -426,32 +429,30 @@ class SlideProject:
             self.folder / deck.pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout
         )
 
-    def cached_slide_image_path(self, slide_id: int, layout: bool = True) -> Optional[Path]:
-        """Return the cached PNG of a slide if it exists, without decoding or rendering."""
-        slide = self.slide(slide_id)
-        deck = self.deck(slide.deck_id) if slide is not None else None
-        if deck is None:
-            return None
-        try:
-            return images.cached_path(
-                self.folder / deck.pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout
-            )
-        except OSError:
-            return None
+    def slide_image_path(self, slide_id: int, layout: bool = True) -> Optional[Path]:
+        """Return the cached PNG of a slide without rendering it.
 
-    def slide_image_diagnosis(self, slide_id: int, layout: bool = True) -> dict:
-        """Report the source and cache state of a slide image, without rendering it."""
+        If the slide is not rendered yet, its deck is queued for background rendering
+        and None is returned. Raises KeyError or FileNotFoundError for unknown slides
+        and missing decks, and images.RenderError if the deck cannot be rendered.
+        """
         slide = self.slide(slide_id)
         if slide is None:
-            return {"error": "slide not in database"}
+            raise KeyError(f"No such slide: {slide_id}")
         deck = self.deck(slide.deck_id)
         if deck is None:
-            return {"error": f"deck {slide.deck_id} not in database"}
-        info = {"pptx": deck.pptx_path, "slide": slide.index_in_deck + 1}
-        info.update(images.diagnose(
-            self.folder / deck.pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout
-        ))
-        return info
+            raise KeyError(f"No such deck: {slide.deck_id}")
+        pptx_path = self.folder / deck.pptx_path
+        if not pptx_path.is_file():
+            raise FileNotFoundError(f"No such file: {deck.pptx_path}")
+        cached = images.cached_path(pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout)
+        if cached is not None:
+            return cached
+        failure = images.render_failure(pptx_path, strip=not layout)
+        if failure is not None:
+            raise images.RenderError(f"Rendering {deck.pptx_path} failed: {failure}")
+        self._renderer.request(pptx_path, strip=not layout)
+        return None
 
     def slide_pptx_object(self, slide_id: int) -> PptxSlide:
         """Open the source .pptx and return the python-pptx Slide object."""

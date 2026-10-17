@@ -164,47 +164,6 @@ def test_advanced_semantic_search_preserves_rank_and_validates_limit(indexed_pro
     ).status_code == 400
 
 
-def test_image_timeout_report_includes_server_diagnosis(indexed_project, caplog):
-    project = indexed_project
-    client = create_app(project).test_client()
-    ids = {d.name: project.slides(d.id)[0].id for d in project.decks()}
-
-    def report(slide_id, **extra):
-        caplog.clear()
-        with caplog.at_level("WARNING", logger="slidedesk.images"):
-            response = client.post("/api/image-status", json={
-                "event": "timeout", "slide_id": slide_id, "attempts": 3,
-                "status": 0, "waited_ms": 2500, "connected": False, **extra})
-        assert response.status_code == 204
-        return caplog.records[-1].getMessage()
-
-    message = report(ids["missing.pptx"])
-    assert "attempts=3 status=0 waited_ms=2500 connected=False" in message
-    assert "pptx='missing.pptx'" in message
-    assert "pptx_exists=False" in message
-    assert "cached_png" not in message
-    assert "server_in_flight=0" in message
-    assert "last_response=never" in message
-
-    message = report(ids["available.pptx"], layout=False)
-    assert "pptx_exists=True" in message
-    assert "cached_png=False" in message
-    assert "layout=False" in message
-    assert "rendering_now=none" in message
-
-    assert "problem='slide not in database'" in report(999)
-    assert "message='HTTP 404'" in report(999, message="HTTP 404")
-    assert "client=ab12cd" in report(999, client="ab12cd")
-    assert "client=" not in report(999, client="bad id")
-
-    # After a failed request the report shows how the server answered.
-    assert client.get(f"/api/slides/{ids['missing.pptx']}/image").status_code == 404
-    message = report(ids["missing.pptx"])
-    assert "server_in_flight=0" in message
-    assert "last_response='404" in message
-
-
-
 def test_slide_image_serves_cached_png_without_rendering(indexed_project, monkeypatch):
     from PIL import Image
     from slidedesk import images
@@ -213,12 +172,47 @@ def test_slide_image_serves_cached_png_without_rendering(indexed_project, monkey
     deck = next(d for d in project.decks() if d.name == "available.pptx")
     slide_id = project.slides(deck.id)[0].id
     project.cache_dir.mkdir(parents=True, exist_ok=True)
-    cached = project.cache_dir / f"{images._cache_key(project.folder / deck.pptx_path, 0, False)}.png"
+    key = images._source_key(project.folder / deck.pptx_path, False)
+    cached = images._cache_file(key, 0, project.cache_dir)
     Image.new("RGB", (4, 3), "red").save(cached)
-    monkeypatch.setattr(project, "slide_image", lambda *a, **k: pytest.fail("must not render"))
+    monkeypatch.setattr(project._renderer, "request", lambda *a, **k: pytest.fail("must not render"))
 
-    response = create_app(project).test_client().get(f"/api/slides/{slide_id}/image")
+    response = create_app(project).test_client().get(f"/api/slides/{slide_id}/image?v=0")
     assert response.status_code == 200
     assert response.mimetype == "image/png"
     assert response.data == cached.read_bytes()
     response.close()
+
+
+def test_slide_image_queues_uncached_slides_without_waiting(indexed_project, monkeypatch):
+    project = indexed_project
+    requested = []
+    monkeypatch.setattr(project._renderer, "request",
+                        lambda path, strip=False: requested.append((path.name, strip)))
+    client = create_app(project).test_client()
+    ids = {d.name: project.slides(d.id)[0].id for d in project.decks()}
+
+    response = client.get(f"/api/slides/{ids['available.pptx']}/image?layout=false")
+    assert response.status_code == 202
+    assert response.headers["Cache-Control"] == "no-store"
+    assert requested == [("available.pptx", True)]
+
+    assert client.get(f"/api/slides/{ids['missing.pptx']}/image").status_code == 404
+    assert client.get(f"/api/slides/{ids['directory.pptx']}/image").status_code == 404
+    assert client.get("/api/slides/999/image").status_code == 404
+    assert len(requested) == 1
+
+
+def test_slide_image_reports_failed_rendering(indexed_project, monkeypatch):
+    from slidedesk import images
+
+    project = indexed_project
+    deck = next(d for d in project.decks() if d.name == "available.pptx")
+    slide_id = project.slides(deck.id)[0].id
+    monkeypatch.setattr(project._renderer, "request", lambda *a, **k: pytest.fail("must not render"))
+    key = images._source_key(project.folder / deck.pptx_path, False)
+    monkeypatch.setitem(images._failures, key, "RuntimeError: boom")
+
+    response = create_app(project).test_client().get(f"/api/slides/{slide_id}/image")
+    assert response.status_code == 500
+    assert "boom" in response.get_json()["error"]

@@ -1,7 +1,10 @@
-"""Render images for individual slides directly from .pptx files using render-pptx.
+"""Render slide images directly from .pptx files using render-pptx.
 
-Rendering a deck writes all of its slides as PNGs to the on-disk cache; rendered decks
-are also kept in a small in-memory LRU cache.
+Every rendered slide is saved as a PNG in the on-disk cache, keyed by the deck's
+path, modification time and size, the slide index and the layout mode. Rendering
+happens one slide at a time under a global lock, so the scanner, the embedding
+worker and the on-demand `BackgroundRenderer` interleave instead of waiting for
+whole decks, and each PNG is available as soon as its slide is rendered.
 """
 from __future__ import annotations
 
@@ -9,156 +12,166 @@ import hashlib
 import logging
 import tempfile
 import threading
-import time
-from functools import lru_cache
+from collections import OrderedDict
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from PIL import Image
 from pptx import Presentation
 
 logger = logging.getLogger(__name__)
 
-_render_lock = threading.RLock()
-# Decks whose rendering raised; keyed by (path, mtime_ns, size, strip) so edits retry.
-_failed_renders: dict = {}
-# (pptx_path, strip, monotonic start) of the deck being rendered, for diagnostics.
-_current_render: Optional[tuple] = None
+# render-pptx renders one slide at a time.
+_render_lock = threading.Lock()
+# Decks whose rendering raised, keyed by _source_key, so they are not retried until edited.
+_failures: dict = {}
 
 
-def _render_presentation(prs) -> list:
-    from render_pptx import render_slides
-
-    return list(render_slides(prs))
+class RenderError(RuntimeError):
+    pass
 
 
-def _render_visible_deck(pptx_path: Path) -> list:
-    from . import pptx_tools
-
-    prs = Presentation(str(pptx_path))
-    for slide in prs.slides:
-        pptx_tools.set_slide_hidden(slide, False)
-    return _render_presentation(prs)
-
-
-def _render_strip_deck(pptx_path: Path) -> list:
-    from . import layout_strip
-
-    with tempfile.TemporaryDirectory() as tmp:
-        stripped = Path(tmp) / pptx_path.name
-        layout_strip.make_strip_layout_copy(pptx_path, stripped)
-        images = _render_presentation(Presentation(str(stripped)))
-    return [image.convert("L").convert("RGB") for image in images]
-
-
-@lru_cache(maxsize=4)
-def _render_deck_cached(
-    pptx_path: Path, mtime_ns: int, size: int, strip: bool
-) -> Tuple[Image.Image, ...]:
-    with _render_lock:
-        images = _render_strip_deck(pptx_path) if strip else _render_visible_deck(pptx_path)
-    return tuple(images)
-
-
-def _cache_key(pptx_path: Path, index: int, strip: bool) -> str:
+def _source_key(pptx_path: Path, strip: bool) -> tuple:
     stat = pptx_path.stat()
-    raw = f"{pptx_path}|{stat.st_mtime_ns}|{stat.st_size}|{index}|{int(strip)}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return (str(pptx_path), stat.st_mtime_ns, stat.st_size, strip)
+
+
+def _cache_file(source_key: tuple, index: int, cache_dir: Path) -> Path:
+    path, mtime_ns, size, strip = source_key
+    raw = f"{path}|{mtime_ns}|{size}|{index}|{int(strip)}"
+    return cache_dir / f"{hashlib.sha1(raw.encode('utf-8')).hexdigest()}.png"
 
 
 def cached_path(pptx_path: Path, index: int, cache_dir: Path, strip: bool = False) -> Optional[Path]:
-    candidate = cache_dir / f"{_cache_key(pptx_path, index, strip)}.png"
+    """Return the cached PNG of slide `index` (0-based), or None if it is not rendered yet."""
+    candidate = _cache_file(_source_key(pptx_path, strip), index, cache_dir)
     return candidate if candidate.exists() else None
 
 
-def delete_cached(pptx_path: Path, slide_count: int, cache_dir: Path) -> None:
-    """Remove cached PNGs of every slide of the current version of `pptx_path`."""
-    for strip in (False, True):
-        for index in range(slide_count):
-            (cache_dir / f"{_cache_key(pptx_path, index, strip)}.png").unlink(missing_ok=True)
-    clear_cache()
+def render_failure(pptx_path: Path, strip: bool = False) -> Optional[str]:
+    """Return why rendering the current version of `pptx_path` failed, if it did."""
+    return _failures.get(_source_key(pptx_path, strip))
+
+
+def _open_presentation(pptx_path: Path, strip: bool, tmp: str):
+    from . import layout_strip, pptx_tools
+
+    if strip:
+        stripped = Path(tmp) / pptx_path.name
+        layout_strip.make_strip_layout_copy(pptx_path, stripped)
+        return Presentation(str(stripped))
+    prs = Presentation(str(pptx_path))
+    for slide in prs.slides:
+        pptx_tools.set_slide_hidden(slide, False)
+    return prs
+
+
+def _render_slide(prs, index: int, strip: bool) -> Image.Image:
+    from render_pptx import render_slides
+
+    image = render_slides(prs, [index])[0]
+    return image.convert("L").convert("RGB") if strip else image
+
+
+def render_deck(pptx_path: Path, cache_dir: Path, strip: bool = False,
+                stop_event: Optional[threading.Event] = None) -> None:
+    """Render and cache every slide of `pptx_path` that is not cached yet.
+
+    Every slide is rendered as if visible, including hidden slides. With `strip`,
+    the grayscale strip-layout rendering is produced. Raises RenderError if the
+    deck cannot be rendered; the failure is remembered until the file changes.
+    """
+    key = _source_key(pptx_path, strip)
+    if key in _failures:
+        raise RenderError(f"Rendering {pptx_path.name} failed earlier: {_failures[key]}")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            prs = _open_presentation(pptx_path, strip, tmp)
+            for index in range(len(prs.slides)):
+                if stop_event is not None and stop_event.is_set():
+                    return
+                target = _cache_file(key, index, cache_dir)
+                with _render_lock:
+                    if target.exists():  # rendered meanwhile by another thread
+                        continue
+                    image = _render_slide(prs, index, strip)
+                    tmp_target = target.with_suffix(".tmp")
+                    image.save(tmp_target, format="PNG")
+                    tmp_target.replace(target)
+    except Exception as exc:
+        logger.exception("Rendering %s failed", pptx_path)
+        _failures[key] = f"{type(exc).__name__}: {exc}"
+        raise RenderError(f"Rendering {pptx_path.name} failed: {exc}") from exc
 
 
 def render_slide_image(
     pptx_path: Path, index: int, cache_dir: Path, strip: bool = False
 ) -> Image.Image:
-    """Return slide `index` (0-based) of `pptx_path` as a PIL Image.
-
-    PNGs are cached on disk in `cache_dir`, keyed by deck path/mtime/size, slide
-    index and layout mode. With `strip`, the grayscale strip-layout rendering is
-    returned. Every slide is rendered as if visible, including hidden slides.
-    """
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    """Return slide `index` (0-based) of `pptx_path` as a PIL Image, rendering the
+    deck first if the slide is not cached."""
     cached = cached_path(pptx_path, index, cache_dir, strip)
-    if cached is not None:
-        return Image.open(cached)
-
-    # Concurrent requests (e.g. browser retries) must not each re-render the same deck.
-    wait_started = time.monotonic()
-    with _render_lock:
-        waited = time.monotonic() - wait_started
-        if waited >= 0.5:
-            logger.info("Slide %d of %s waited %.1fs for the render lock", index + 1, pptx_path.name, waited)
+    if cached is None:
+        render_deck(pptx_path, cache_dir, strip)
         cached = cached_path(pptx_path, index, cache_dir, strip)
-        if cached is not None:
-            return Image.open(cached)
-        return _render_and_cache(pptx_path, index, cache_dir, strip)
-
-
-def _render_and_cache(pptx_path: Path, index: int, cache_dir: Path, strip: bool) -> Image.Image:
-    stat = pptx_path.stat()
-    failure_key = (pptx_path, stat.st_mtime_ns, stat.st_size, strip)
-    if failure_key in _failed_renders:
-        raise ValueError(f"Rendering {pptx_path.name} failed earlier: {_failed_renders[failure_key]}")
-    logger.warning("Slide %d of %s is not cached; rendering the deck now", index + 1, pptx_path)
-    global _current_render
-    started = time.monotonic()
-    _current_render = (pptx_path, strip, started)
-    try:
-        rendered = _render_deck_cached(pptx_path, stat.st_mtime_ns, stat.st_size, strip)
-    except Exception as exc:
-        logger.exception("Rendering %s failed after %.1fs", pptx_path, time.monotonic() - started)
-        _failed_renders[failure_key] = f"{type(exc).__name__}: {exc}"
-        raise ValueError(f"Rendering {pptx_path.name} failed: {exc}") from exc
-    finally:
-        _current_render = None
-    logger.warning("Rendered %s in %.1fs", pptx_path.name, time.monotonic() - started)
-    if not 0 <= index < len(rendered):
+    if cached is None:
         raise ValueError(f"Slide {index} not found in {pptx_path}")
-    # Persist every slide of the deck so later requests never trigger a re-render.
-    for i, slide_image in enumerate(rendered):
-        target = cache_dir / f"{_cache_key(pptx_path, i, strip)}.png"
-        if not target.exists():
-            tmp_target = target.with_suffix(".tmp")
-            slide_image.save(tmp_target, format="PNG")
-            tmp_target.replace(target)
-    return rendered[index].copy()
+    with Image.open(cached) as image:
+        image.load()
+        return image.copy()
 
 
-def diagnose(pptx_path: Path, index: int, cache_dir: Path, strip: bool = False) -> dict:
-    """Describe why slide `index` of `pptx_path` may not be servable, without rendering."""
-    info = {"pptx_exists": pptx_path.is_file(), "cached": None, "failed": None, "rendering": None}
-    if info["pptx_exists"]:
-        try:
-            stat = pptx_path.stat()
-            info["cached"] = cached_path(pptx_path, index, cache_dir, strip) is not None
-            info["failed"] = _failed_renders.get((pptx_path, stat.st_mtime_ns, stat.st_size, strip))
-        except OSError as exc:
-            info["failed"] = f"{type(exc).__name__}: {exc}"
-    current = _current_render
-    if current is not None:
-        path, current_strip, started = current
-        info["rendering"] = (f"{path.name}{' (strip)' if current_strip else ''} "
-                             f"for {time.monotonic() - started:.1f}s")
-    return info
+class BackgroundRenderer:
+    """Renders requested decks on one daemon thread, most recently requested first."""
+
+    def __init__(self, cache_dir: Path):
+        self.cache_dir = cache_dir
+        self._pending: OrderedDict = OrderedDict()
+        self._cond = threading.Condition()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def request(self, pptx_path: Path, strip: bool = False) -> None:
+        with self._cond:
+            if self._stop.is_set():
+                return
+            self._pending[(pptx_path, strip)] = None
+            self._pending.move_to_end((pptx_path, strip))
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name="slidedesk-render", daemon=True)
+                self._thread.start()
+            self._cond.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._pending and not self._stop.is_set():
+                    self._cond.wait()
+                if self._stop.is_set():
+                    return
+                (pptx_path, strip), _ = self._pending.popitem(last=True)
+            try:
+                render_deck(pptx_path, self.cache_dir, strip, stop_event=self._stop)
+            except (OSError, RenderError) as exc:
+                logger.warning("Background rendering of %s failed: %s", pptx_path.name, exc)
+
+    def stop(self, timeout: float = 5.0) -> None:
+        with self._cond:
+            self._stop.set()
+            self._cond.notify_all()
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
 
 
-def cache_deck_images(pptx_path: Path, cache_dir: Path) -> None:
-    """Render and persist every slide of the deck with and without strip layout."""
+def delete_cached(pptx_path: Path, slide_count: int, cache_dir: Path) -> None:
+    """Remove cached PNGs of every slide of the current version of `pptx_path`."""
     for strip in (False, True):
-        render_slide_image(pptx_path, 0, cache_dir, strip=strip).close()
+        key = _source_key(pptx_path, strip)
+        _failures.pop(key, None)
+        for index in range(slide_count):
+            _cache_file(key, index, cache_dir).unlink(missing_ok=True)
 
 
 def clear_cache() -> None:
-    _failed_renders.clear()
-    _render_deck_cached.cache_clear()
+    _failures.clear()
