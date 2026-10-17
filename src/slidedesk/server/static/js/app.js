@@ -485,7 +485,89 @@
   function thumbInnerHTML(item) {
     const badge = item.slide.hidden ? '<span class="badge">hidden</span>' : "";
     const label = `<span class="deck-label">${escapeHtml(item.deck.name)} #${item.slide.index_in_deck + 1} / ${item.deck.slides.length}</span>`;
-    return `<img loading="lazy" src="${slideImageUrl(item.slide.id)}" alt="slide ${item.slide.index_in_deck + 1}" />${badge}${label}`;
+    return `<img data-src="${slideImageUrl(item.slide.id)}" alt="slide ${item.slide.index_in_deck + 1}" />${badge}${label}`;
+  }
+
+  // Thumbnails are loaded by a polling loop: an attempt is abandoned after the timeout
+  // and retried on a later tick, as long as the slide is still on screen.
+  const IMAGE_LOAD_TIMEOUT_MS = 500;
+  const IMAGE_LOOP_INTERVAL_MS = 200;
+  const MAX_CONCURRENT_IMAGE_LOADS = 6;
+  const IMAGE_REPORT_INTERVAL_MS = 2000;
+  const imageStats = { timeouts: 0, lastReport: 0 };
+
+  function reportImageStatus(payload) {
+    fetch("/api/image-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  }
+
+  function slideIdOf(img) {
+    const el = img.closest(".slide-thumb");
+    return el ? Number(el.dataset.slideId) : null;
+  }
+
+  function startImageLoad(img) {
+    img.dataset.loading = "1";
+    img.dataset.attempts = (Number(img.dataset.attempts) || 0) + 1;
+    let timer = null;
+    const finish = () => {
+      clearTimeout(timer);
+      delete img.dataset.loading;
+      img.removeEventListener("load", onLoad);
+      img.removeEventListener("error", onError);
+    };
+    const onLoad = () => {
+      img.dataset.loaded = "1";
+      finish();
+    };
+    const onError = () => {
+      img.removeAttribute("src");
+      reportImageStatus({ event: "error", slide_id: slideIdOf(img) });
+      finish();
+    };
+    img.addEventListener("load", onLoad);
+    img.addEventListener("error", onError);
+    timer = setTimeout(() => {
+      img.removeAttribute("src"); // aborts the pending request
+      imageStats.timeouts += 1;
+      reportImageStatus({ event: "timeout", slide_id: slideIdOf(img) });
+      finish();
+    }, IMAGE_LOAD_TIMEOUT_MS);
+    img.src = img.dataset.src;
+  }
+
+  function loadVisibleImages() {
+    const all = canvas.node().querySelectorAll(".slide-thumb img[data-src]");
+    const pending = canvas.node().querySelectorAll(".slide-thumb img[data-src]:not([data-loaded])");
+    if (!pending.length) return;
+    let active = canvas.node().querySelectorAll(".slide-thumb img[data-loading]").length;
+    const view = viewport.getBoundingClientRect();
+    let onScreen = 0;
+    // Least-attempted first, so slides that keep timing out don't starve the others.
+    const queue = Array.from(pending).sort((a, b) => (Number(a.dataset.attempts) || 0) - (Number(b.dataset.attempts) || 0));
+    for (const img of queue) {
+      const r = img.getBoundingClientRect();
+      if (r.right < view.left || r.left > view.right || r.bottom < view.top || r.top > view.bottom) continue;
+      onScreen += 1;
+      if (active >= MAX_CONCURRENT_IMAGE_LOADS || img.dataset.loading) continue;
+      startImageLoad(img);
+      active += 1;
+    }
+    const now = Date.now();
+    if (onScreen && now - imageStats.lastReport >= IMAGE_REPORT_INTERVAL_MS) {
+      imageStats.lastReport = now;
+      reportImageStatus({
+        event: "summary",
+        on_screen: onScreen,
+        loading: active,
+        loaded: all.length - pending.length,
+        timeouts: imageStats.timeouts,
+      });
+    }
   }
 
   function renderStatic(items) {
@@ -521,7 +603,13 @@
       .attr("class", thumbClasses)
       .attr("data-slide-id", (d) => d.slide.id)
       .attr("title", (d) => `${d.deck.name} — slide ${d.slide.index_in_deck + 1}`)
-      .html(thumbInnerHTML);
+      .each(function (d) {
+        // Rewriting identical markup would recreate the <img> and reload it.
+        const markup = thumbInnerHTML(d);
+        if (this.__markup === markup) return;
+        this.__markup = markup;
+        this.innerHTML = markup;
+      });
 
     entered
       .merge(sel)
@@ -1499,6 +1587,7 @@
   pollScanStatus();
   pollEmbeddingStatus();
   setInterval(loadDecks, 5000);
+  setInterval(loadVisibleImages, IMAGE_LOOP_INTERVAL_MS);
   setInterval(pollScanStatus, 2000);
   setInterval(pollEmbeddingStatus, 2000);
 })();

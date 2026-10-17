@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -13,6 +15,8 @@ from flask import Flask, Response, jsonify, request, send_file, render_template,
 
 from .. import convert, embeddings, text_generation
 from ..project import SlideProject
+
+image_log = logging.getLogger("slidedesk.images")
 
 
 def create_app(project: SlideProject, *, scan_enabled: bool = True, on_shutdown=None) -> Flask:
@@ -280,15 +284,36 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True, on_shutdown=
 
     @app.get("/api/slides/<int(signed=True):slide_id>/image")
     def api_slide_image(slide_id):
+        started = time.monotonic()
+        image_log.info("Image request for slide %s started", slide_id)
         try:
             layout = request.args.get("layout", "true").lower() != "false"
             image = project.slide_image(slide_id) if layout else project.slide_image(slide_id, layout=False)
         except (KeyError, FileNotFoundError, ValueError) as exc:
+            app.logger.error("Cannot serve image for slide %s: %s", slide_id, exc)
             return jsonify({"error": str(exc)}), 404
+        except Exception:
+            app.logger.exception("Rendering image for slide %s failed", slide_id)
+            return jsonify({"error": "rendering failed"}), 500
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         buf.seek(0)
+        image_log.info("Image for slide %s ready after %.0f ms", slide_id, (time.monotonic() - started) * 1000)
         return send_file(buf, mimetype="image/png", max_age=3600)
+
+    @app.post("/api/image-status")
+    def api_image_status():
+        data = request.get_json(silent=True) or {}
+        event = data.get("event")
+        if event not in ("timeout", "error", "summary"):
+            return jsonify({"error": "unknown event"}), 400
+        values = []
+        for key in ("slide_id", "on_screen", "loading", "loaded", "timeouts"):
+            value = data.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                values.append(f"{key}={value}")
+        image_log.warning("Browser image %s: %s", event, " ".join(values))
+        return "", 204
 
     @app.get("/api/scan/status")
     def api_scan_status():

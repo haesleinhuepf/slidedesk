@@ -6,8 +6,10 @@ are also kept in a small in-memory LRU cache.
 from __future__ import annotations
 
 import hashlib
+import logging
 import tempfile
 import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Tuple
@@ -15,7 +17,9 @@ from typing import Optional, Tuple
 from PIL import Image
 from pptx import Presentation
 
-_render_lock = threading.Lock()
+logger = logging.getLogger(__name__)
+
+_render_lock = threading.RLock()
 
 
 def _render_presentation(prs) -> list:
@@ -85,8 +89,20 @@ def render_slide_image(
     if cached is not None:
         return Image.open(cached)
 
+    # Concurrent requests (e.g. browser retries) must not each re-render the same deck.
+    with _render_lock:
+        cached = cached_path(pptx_path, index, cache_dir, strip)
+        if cached is not None:
+            return Image.open(cached)
+        return _render_and_cache(pptx_path, index, cache_dir, strip)
+
+
+def _render_and_cache(pptx_path: Path, index: int, cache_dir: Path, strip: bool) -> Image.Image:
     stat = pptx_path.stat()
+    logger.warning("Slide %d of %s is not cached; rendering the deck now", index + 1, pptx_path)
+    started = time.monotonic()
     rendered = _render_deck_cached(pptx_path, stat.st_mtime_ns, stat.st_size, strip)
+    logger.warning("Rendered %s in %.1fs", pptx_path.name, time.monotonic() - started)
     if not 0 <= index < len(rendered):
         raise ValueError(f"Slide {index} not found in {pptx_path}")
     # Persist every slide of the deck so later requests never trigger a re-render.

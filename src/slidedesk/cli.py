@@ -1,6 +1,7 @@
 """Command-line entry point: `slidedesk <folder>`."""
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
@@ -85,6 +86,8 @@ def main(folder: str, host: str, port: int, no_browser: bool, scan_interval: flo
         return
 
     from .server.app import create_app
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     project = SlideProject(folder)
     scan_proc = None if no_scan else _start_scan_process(folder, scan_interval)
