@@ -99,5 +99,11 @@ def render_slide_image(
     return rendered[index].copy()
 
 
+def cache_deck_images(pptx_path: Path, cache_dir: Path) -> None:
+    """Render and persist every slide of the deck with and without strip layout."""
+    for strip in (False, True):
+        render_slide_image(pptx_path, 0, cache_dir, strip=strip).close()
+
+
 def clear_cache() -> None:
     _render_deck_cached.cache_clear()

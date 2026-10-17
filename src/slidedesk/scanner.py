@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional
 
 from pptx import Presentation
 
-from . import pptx_tools
+from . import images, pptx_tools
 
 if TYPE_CHECKING:
     from .project import SlideProject
@@ -120,6 +120,15 @@ def _scan_once(
 
         needs_reindex = force or row is None or row["pptx_mtime"] != mtime
         now = time.time()
+
+        if needs_reindex:
+            # Cache images before the deck is added to the database.
+            try:
+                images.cache_deck_images(pptx_path, project.cache_dir)
+            except Exception as exc:
+                log.warning("Image caching failed for %s: %s", rel_pptx, exc)
+            if stop_event and stop_event.is_set():
+                break
 
         with project._conn_lock, conn:
             if row is None:
