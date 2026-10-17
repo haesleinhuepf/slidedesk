@@ -1118,6 +1118,12 @@
     const { slide, deck } = entry;
     const hidden = entireDeck ? !deck.slides.every((s) => s.hidden) : !slide.hidden;
     const url = entireDeck ? `/api/decks/${deck.id}/slides/hidden` : `/api/slides/${slide.id}/hidden`;
+    // Update the view optimistically; the request may wait behind background scanning.
+    const affected = entireDeck ? deck.slides : [slide];
+    const previous = affected.map((s) => s.hidden);
+    affected.forEach((s) => { s.hidden = hidden; });
+    updateSelectionUi();
+    render();
     try {
       const res = await fetch(url, {
         method: "PATCH",
@@ -1126,10 +1132,10 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not change visibility");
-      await loadDecks();
+    } catch (error) {
+      affected.forEach((s, i) => { s.hidden = previous[i]; });
       updateSelectionUi();
       render();
-    } catch (error) {
       window.alert(error.message);
     }
   }
