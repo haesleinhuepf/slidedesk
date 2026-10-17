@@ -1,6 +1,7 @@
 """Command-line entry point: `slidedesk <folder>`."""
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
@@ -22,7 +23,7 @@ def _start_scan_process(folder: str, scan_interval: float) -> subprocess.Popen:
     return subprocess.Popen(cmd, **kwargs)
 
 
-def _stop_scan_process(proc: subprocess.Popen, timeout: float = 30.0) -> None:
+def _stop_scan_process(proc: subprocess.Popen, timeout: float = 15.0) -> None:
     if proc.poll() is not None:
         return
     try:
@@ -48,7 +49,11 @@ def _run_scan_only(folder: str, scan_interval: float) -> None:
         while not stop.wait(0.5):
             pass
     finally:
-        project.close()
+        # Workers may be inside a long model call; don't let that block exit.
+        closer = threading.Thread(target=project.close, daemon=True)
+        closer.start()
+        closer.join(10.0)
+        os._exit(0)
 
 
 @click.command()
@@ -84,7 +89,11 @@ def main(folder: str, host: str, port: int, no_browser: bool, scan_interval: flo
     project = SlideProject(folder)
     scan_proc = None if no_scan else _start_scan_process(folder, scan_interval)
 
-    app = create_app(project, scan_enabled=not no_scan)
+    app = create_app(
+        project,
+        scan_enabled=not no_scan,
+        on_shutdown=(lambda: _stop_scan_process(scan_proc)) if scan_proc is not None else None,
+    )
 
     if not no_browser:
         url = f"http://{host}:{port}/"

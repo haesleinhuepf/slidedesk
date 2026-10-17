@@ -15,7 +15,7 @@ from .. import convert, embeddings, text_generation
 from ..project import SlideProject
 
 
-def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
+def create_app(project: SlideProject, *, scan_enabled: bool = True, on_shutdown=None) -> Flask:
     app = Flask(
         __name__,
         static_folder=str(Path(__file__).parent / "static"),
@@ -69,8 +69,12 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
         print("Shutdown requested.")
         def _exit():
             try:
+                if on_shutdown is not None:
+                    on_shutdown()
                 print("Closing project...")
                 project.close()
+            except Exception as exc:
+                print(f"Error during shutdown: {exc}")
             finally:
                 print("Exiting...")
                 os._exit(0)

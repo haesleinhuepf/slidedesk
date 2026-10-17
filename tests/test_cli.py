@@ -60,9 +60,13 @@ def test_scan_only_skips_server(tmp_path, monkeypatch):
     monkeypatch.setattr("flask.Flask.run", run)
     monkeypatch.setattr("slidedesk.cli.signal.signal", Mock())
     monkeypatch.setattr("threading.Event.wait", lambda self, timeout=None: True)
+    exit_mock = Mock()
+    monkeypatch.setattr("slidedesk.cli.os._exit", exit_mock)
+    monkeypatch.setattr("slidedesk.cli.threading.Thread", Mock())
     result = CliRunner().invoke(
         main, [str(tmp_path), "--scan-only", "--scan-interval", "12"]
     )
     assert result.exit_code == 0, result.exception
+    exit_mock.assert_called_once_with(0)
     scanner.assert_called_once_with(interval=12.0)
     run.assert_not_called()
