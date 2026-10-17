@@ -254,3 +254,9 @@ def test_bulk_source_keys_match_single_lookup(tmp_path, strip):
         assert project._image_source_keys(strip) == expected
     finally:
         project.close()
+
+
+def test_similar_slides_checks_source_keys_in_bulk(project, monkeypatch):
+    seed_vectors(project)
+    monkeypatch.setattr(project, "_image_source_key", Mock(side_effect=AssertionError))
+    assert [s.id for s in project.similar_slides(1, top_k=4)] == [2, 3, 5, 4]

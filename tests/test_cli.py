@@ -70,3 +70,21 @@ def test_scan_only_skips_server(tmp_path, monkeypatch):
     exit_mock.assert_called_once_with(0)
     scanner.assert_called_once_with(interval=12.0)
     run.assert_not_called()
+
+
+def test_serve_imports_torch_before_starting_server(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr("slidedesk.cli.importlib", Mock(import_module=calls.append))
+    monkeypatch.setattr("flask.Flask.run", lambda app, **kwargs: calls.append("run"))
+    result = CliRunner().invoke(main, [str(tmp_path), "--no-browser", "--no-scan"])
+    assert result.exit_code == 0, result.exception
+    assert calls == ["torch", "run"]
+
+
+def test_serve_starts_without_torch(tmp_path, monkeypatch):
+    monkeypatch.setattr("slidedesk.cli.importlib", Mock(import_module=Mock(side_effect=ImportError)))
+    run = Mock()
+    monkeypatch.setattr("flask.Flask.run", run)
+    result = CliRunner().invoke(main, [str(tmp_path), "--no-browser", "--no-scan"])
+    assert result.exit_code == 0, result.exception
+    run.assert_called_once()

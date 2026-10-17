@@ -425,32 +425,32 @@ class SlideProject:
                 count += 1
         return count
 
-    def _similar_cached(self, slide_id: int, image: bool = False, strip: bool = False) -> List[int]:
+    def _similar_cached(self, slide_id: int, image: bool = False, strip: bool = False,
+                        limit: Optional[int] = None) -> List[int]:
         image = image or strip
         if strip:
             table = "slide_strip_image_embeddings"
         else:
             table = "slide_image_embeddings" if image else "slide_embeddings"
         model = self.IMAGE_EMBEDDING_MODEL if image else self.EMBEDDING_MODEL
+        # Bulk keys: one query and one stat per deck instead of per candidate slide.
+        keys = self._image_source_keys(strip) if image else None
         with self._conn_lock:
             row = self.conn.execute(
                 f"SELECT * FROM {table} WHERE slide_id = ? AND model = ?",
                 (slide_id, model),
             ).fetchone()
-            if row is None or (image and row["source_key"] != self._image_source_key(slide_id, strip)):
+            if row is None or (image and row["source_key"] != keys.get(slide_id)):
                 return []
             target = embeddings.unpack_vector(row["vector"])
             rows = self.conn.execute(
                 f"SELECT * FROM {table} WHERE model = ? AND slide_id != ? ORDER BY slide_id",
                 (model, slide_id),
             ).fetchall()
-        scored = [
-            (embeddings.cosine_similarity(target, embeddings.unpack_vector(row["vector"])), row["slide_id"])
-            for row in rows
-            if not image or row["source_key"] == self._image_source_key(row["slide_id"], strip)
-        ]
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return [sid for _, sid in scored]
+        if image:
+            rows = [r for r in rows if r["source_key"] == keys.get(r["slide_id"])]
+        order = embeddings.rank_by_cosine(target, [r["vector"] for r in rows], limit)
+        return [rows[i]["slide_id"] for i in order]
 
     def similar_slides(self, slide_id: int, top_k: int = 16) -> List[Slide]:
         """Strip-layout image matches first, then image matches, then text matches.
@@ -461,9 +461,10 @@ class SlideProject:
         """
         if top_k <= 0:
             return []
-        stripped = self._similar_cached(slide_id, strip=True)
-        visual = self._similar_cached(slide_id, image=True)
-        textual = self._similar_cached(slide_id)
+        # The merge below never uses more than top_k entries of any list.
+        stripped = self._similar_cached(slide_id, strip=True, limit=top_k)
+        visual = self._similar_cached(slide_id, image=True, limit=top_k)
+        textual = self._similar_cached(slide_id, limit=top_k)
         primary = list(dict.fromkeys(stripped + visual))
         ids = list(dict.fromkeys(primary[:(top_k + 1) // 2] + stripped + textual + visual))[:top_k]
         slides = [self.slide(sid) for sid in ids]
@@ -477,12 +478,8 @@ class SlideProject:
                 "SELECT slide_id, vector FROM slide_embeddings WHERE model = ?",
                 (self.EMBEDDING_MODEL,),
             ).fetchall()
-        scored = [
-            (embeddings.cosine_similarity(query_vector, embeddings.unpack_vector(row["vector"])), row["slide_id"])
-            for row in rows
-        ]
-        scored.sort(key=lambda t: t[0], reverse=True)
-        slides = [self.slide(slide_id) for _, slide_id in scored[:top_k]]
+        order = embeddings.rank_by_cosine(query_vector, [row["vector"] for row in rows], top_k)
+        slides = [self.slide(rows[i]["slide_id"]) for i in order]
         return [s for s in slides if s is not None]
 
     # -- rendering --------------------------------------------------------
