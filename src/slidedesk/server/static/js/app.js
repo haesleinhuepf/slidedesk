@@ -627,7 +627,12 @@
       focusSlideId: state.focusSlideId,
       similarSlideIds: [...(state.similarSlideIds || [])],
       showHidden: state.showHidden,
-      transform: d3.zoomTransform(viewport),
+      // The row wrapping depends on past zooms, so keep it with the transform.
+      view: {
+        transform: d3.zoomTransform(viewport),
+        cols: layoutCols,
+        anchor: layoutAnchor && { ...layoutAnchor },
+      },
     };
   }
 
@@ -635,10 +640,42 @@
     if (navigationHistory.length) navigationHistory[historyIndex] = captureLocation();
   }
 
+  function sameItems(a, b) {
+    a = [...a];
+    b = [...b];
+    return a.length === b.length && a.every((value, i) => value === b[i]);
+  }
+
+  function sameLocation(a, b) {
+    const ta = a.view.transform;
+    const tb = b.view.transform;
+    return a.mode === b.mode
+      && a.searchQuery === b.searchQuery
+      && a.searchMode === b.searchMode
+      && a.advancedSearch === b.advancedSearch
+      && sameItems(a.searchOrder, b.searchOrder)
+      && sameItems(a.matchedSlideIds, b.matchedSlideIds)
+      && a.focusDeckId === b.focusDeckId
+      && a.focusSlideId === b.focusSlideId
+      && sameItems(a.similarSlideIds, b.similarSlideIds)
+      && a.showHidden === b.showHidden
+      && ta.x === tb.x && ta.y === tb.y && ta.k === tb.k
+      && a.view.cols === b.view.cols
+      && (a.view.anchor && a.view.anchor.id) === (b.view.anchor && b.view.anchor.id)
+      && (a.view.anchor && a.view.anchor.left) === (b.view.anchor && b.view.anchor.left);
+  }
+
+  // Call after the new view is laid out and positioned, so the entry records
+  // what is shown. Revisiting exactly the current view adds no entry.
   function recordLocation() {
+    const location = captureLocation();
+    if (navigationHistory.length && sameLocation(location, navigationHistory[historyIndex])) {
+      updateBreadcrumb();
+      return;
+    }
     navigationHistory.splice(0, historyIndex);
     historyIndex = 0;
-    navigationHistory.unshift(captureLocation());
+    navigationHistory.unshift(location);
     updateBreadcrumb();
   }
 
@@ -673,14 +710,19 @@
     d3.select(viewport).interrupt();
     saveLocation();
     historyIndex = index;
-    const { transform, ...location } = navigationHistory[index];
+    const { view, ...location } = navigationHistory[index];
     Object.assign(state, location);
     document.getElementById("search-box").value = state.searchQuery;
     document.getElementById("search-mode").value = state.searchMode;
     document.getElementById("toggle-hidden").checked = state.showHidden;
     hideContextMenu();
+    // Show the view exactly as it was left: same row wrapping, zoom and position.
+    interruptView();
+    layoutCols = view.cols;
+    layoutAnchor = view.anchor && { ...view.anchor };
+    applyView(view.transform);
     render();
-    fitView();
+    applyView(clampTransform(view.transform));
     updateBreadcrumb();
   }
 
@@ -711,9 +753,9 @@
     state.mode = "similar";
     state.similarSlideIds = similar.map((slide) => slide.id);
     state.focusSlideId = slideId;
-    recordLocation();
     startSimilarSimulation(entry.slide, similar);
     fitView(clickedPosition);
+    recordLocation();
   }
 
   async function copySlideToClipboard(slideId) {
@@ -916,9 +958,9 @@
     state.focusDeckId = entry.deck.id;
     state.focusSlideId = slideId;
     state.mode = "deck";
-    recordLocation();
     render();
     fitView(clickedPosition);
+    recordLocation();
   }
 
   function toggleSelection(slideId) {
@@ -1289,9 +1331,9 @@
       state.mode = "pool";
       state.matchedSlideIds = new Set();
       state.searchOrder = [];
-      recordLocation();
       render();
       fitView();
+      recordLocation();
       return;
     }
     const mode = document.getElementById("search-mode").value;
@@ -1319,9 +1361,9 @@
     state.searchOrder = order;
     state.matchedSlideIds = matched;
     state.mode = "search";
-    recordLocation();
     render();
     fitView();
+    recordLocation();
   }
 
   function advancedSearchTopics(text) {
@@ -1423,9 +1465,9 @@
     state.searchOrder = [];
     state.matchedSlideIds = new Set();
     state.mode = "search";
-    recordLocation();
     render();
     fitView();
+    recordLocation();
     dialog.close();
 
     for (let index = 0; index < topics.length; index += 1) {
@@ -1510,9 +1552,9 @@
     document.getElementById("search-mode").value = "keyword";
     document.getElementById("toggle-hidden").checked = false;
     hideContextMenu();
-    recordLocation();
     render();
     fitView();
+    recordLocation();
   });
 
   document.getElementById("search-btn").addEventListener("click", () => {
