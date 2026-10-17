@@ -11,11 +11,9 @@ from slidedesk.server.app import create_app
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     project = SlideProject(tmp_path)
-    for name in ("deck.pptx", "deck.pdf", "deck.hidden.pdf"):
-        (tmp_path / name).touch()
+    (tmp_path / "deck.pptx").touch()
     deck = project.conn.execute(
-        "INSERT INTO decks (pptx_path, pptx_mtime, pdf_path, hidden_pdf_path) "
-        "VALUES ('deck.pptx', 0, 'deck.pdf', 'deck.hidden.pdf')"
+        "INSERT INTO decks (pptx_path, pptx_mtime) VALUES ('deck.pptx', 0)"
     ).lastrowid
     for i in range(5):
         project.conn.execute(
@@ -25,6 +23,11 @@ def project(tmp_path, monkeypatch):
     project.conn.commit()
     monkeypatch.setattr(project, "slide_image", lambda sid: Image.new("RGB", (32, 32)))
     monkeypatch.setattr(image_embeddings, "embed_image", Mock(return_value=[1.0, 0.0]))
+    source_key = project._image_source_key
+    monkeypatch.setattr(
+        project, "_image_source_key",
+        lambda sid, strip=False: None if strip else source_key(sid, strip),
+    )
     try:
         yield project
     finally:
@@ -41,10 +44,8 @@ def test_cache_persists_and_invalidates(project):
         assert reopened.embed_images_pending() == 0
     finally:
         reopened.close()
-    (project.folder / "deck.hidden.pdf").write_bytes(b"changed hidden export")
-    assert project.embed_images_pending() == 1
-    (project.folder / "deck.pdf").write_bytes(b"changed visible export")
-    assert project.embed_images_pending() == 4
+    (project.folder / "deck.pptx").write_bytes(b"changed deck")
+    assert project.embed_images_pending() == 5
     project.IMAGE_EMBEDDING_MODEL = "new-model"
     assert project.embed_images_pending() == 5
     project.conn.execute("DELETE FROM slides")
@@ -66,8 +67,8 @@ def test_status_includes_current_vision_coverage(project, monkeypatch, text_avai
     assert client.get("/api/embeddings/status").get_json()["vision"]["embedded"] == 2
     project.embed_images_pending()
     assert project.embedding_status()["vision"]["embedded"] == 5
-    (project.folder / "deck.hidden.pdf").write_bytes(b"changed")
-    assert project.embedding_status()["vision"]["embedded"] == 4
+    (project.folder / "deck.pptx").write_bytes(b"changed")
+    assert project.embedding_status()["vision"]["embedded"] == 0
     project.IMAGE_EMBEDDING_MODEL = "different-model"
     assert project.embedding_status()["vision"]["embedded"] == 0
 
@@ -75,14 +76,14 @@ def test_status_includes_current_vision_coverage(project, monkeypatch, text_avai
 def test_unrenderable_slides_do_not_starve_others(project, monkeypatch):
     def render(sid):
         if sid < 3:
-            raise FileNotFoundError("PDF unavailable")
+            raise FileNotFoundError("render unavailable")
         return Image.new("RGB", (32, 32))
     monkeypatch.setattr(project, "slide_image", render)
     assert project.embed_images_pending(limit=1) == 1
     assert project.embed_images_pending() == 2
 
 
-@pytest.mark.parametrize("change", ["delete", "pdf"])
+@pytest.mark.parametrize("change", ["delete", "pptx"])
 def test_concurrent_refresh_discards_vector(project, monkeypatch, change):
     def embed(image, model):
         if change == "delete":
@@ -90,10 +91,8 @@ def test_concurrent_refresh_discards_vector(project, monkeypatch, change):
                 project.conn.execute("DELETE FROM slides")
                 project.conn.commit()
         else:
-            with (project.folder / "deck.pdf").open("ab") as pdf:
-                pdf.write(b"changed")
-            with (project.folder / "deck.hidden.pdf").open("ab") as pdf:
-                pdf.write(b"changed")
+            with (project.folder / "deck.pptx").open("ab") as pptx:
+                pptx.write(b"changed")
         return [1.0, 0.0]
     monkeypatch.setattr(image_embeddings, "embed_image", embed)
     assert project.embed_images_pending() == 0
@@ -139,18 +138,15 @@ def test_single_cache_fallback(project, missing):
 
 def test_stale_image_vectors_are_not_returned(project):
     seed_vectors(project)
-    (project.folder / "deck.hidden.pdf").write_bytes(b"updated")
     project.conn.execute("DELETE FROM slide_embeddings")
     project.conn.commit()
-    assert [s.id for s in project.similar_slides(1)] == [2, 3, 4]
-    (project.folder / "deck.pdf").write_bytes(b"updated")
+    assert [s.id for s in project.similar_slides(1)] == [2, 3, 4, 5]
+    (project.folder / "deck.pptx").write_bytes(b"updated")
     assert project.similar_slides(1) == []
 
 
 def test_scan_keeps_decks_and_removes_their_cached_vectors(tmp_path, monkeypatch):
     from pptx import Presentation
-    from slidedesk import scanner
-    monkeypatch.setattr(scanner, "convert_pptx_to_pdf", lambda source, dest: dest.touch())
     monkeypatch.setattr(image_embeddings, "embed_image", Mock(return_value=[1, 0]))
     for name in ("one.pptx", "two.pptx"):
         prs = Presentation()

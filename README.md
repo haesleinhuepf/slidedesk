@@ -17,12 +17,8 @@ pip install slidedesk
 ### Additional requirements
 
 * Works on Windows only
-* Requires Microsoft PowerPoint installed
-* Requires [Poppler](https://poppler.freedesktop.org/). You can install poppler like this
-
-```
-conda install poppler
-```
+* Requires Microsoft PowerPoint installed (used for copying slides to the clipboard and re-saving exports)
+* Slide images are rendered directly from `.pptx` files by [render-pptx](https://pypi.org/project/render-pptx/); no PDF export or Poppler is needed
 
 ## Usage
 
@@ -54,6 +50,21 @@ slidedesk /path/to/folder --no-scan
 This disables startup and recurring folder scans.
 The background embedding worker is also stopped in this mode. You can still
 explicitly refresh an individual indexed deck from the GUI.
+
+### Background scan process
+
+The GUI server itself does not scan or compute embeddings. Unless `--no-scan` is
+given, it starts a second `slidedesk` process with `--scan-only`, which runs only
+the recurring folder scan and the embedding worker (no web server). The GUI still
+shows embedding progress, since both processes share `slidedesk.db`. When the GUI
+process exits, it signals the scan process to shut down (Ctrl+Break on Windows,
+SIGTERM elsewhere) and kills it if it does not stop within 30 seconds.
+
+You can also run the scan process on its own:
+
+```bash
+slidedesk /path/to/folder --scan-only --scan-interval 5
+```
 
 ## How it works under the hood 
 
