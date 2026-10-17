@@ -82,8 +82,11 @@ END;
 
 def connect(db_path: Path) -> sqlite3.Connection:
     """Open a connection to the project database, creating the schema if needed."""
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    # The scan subprocess and server share this file; wait for locks instead of failing.
+    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=60)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 60000")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
     deck_columns = {row["name"] for row in conn.execute("PRAGMA table_info(decks)")}

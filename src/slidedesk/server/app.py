@@ -294,7 +294,8 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True) -> Flask:
     def api_scan_trigger():
         if not scan_enabled:
             return jsonify({"error": "Folder scanning is disabled (--no-scan)."}), 403
-        project.scan_in_background()
+        # One-shot refresh; continuous scanning runs in the --scan-only process.
+        threading.Thread(target=project.scan, daemon=True).start()
         return jsonify({"ok": True})
 
     @app.post("/api/decks/<int(signed=True):deck_id>/refresh")

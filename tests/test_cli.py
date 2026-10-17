@@ -37,9 +37,32 @@ def test_no_scan_serves_existing_database(tmp_path, monkeypatch):
 def test_serve_scans_by_default(tmp_path, monkeypatch):
     scanner = Mock()
     monkeypatch.setattr(SlideProject, "scan_in_background", scanner)
+    proc = Mock()
+    proc.poll.return_value = None
+    popen = Mock(return_value=proc)
+    monkeypatch.setattr("slidedesk.cli.subprocess.Popen", popen)
     monkeypatch.setattr("flask.Flask.run", Mock())
     result = CliRunner().invoke(
         main, [str(tmp_path), "--no-browser", "--scan-interval", "12"]
     )
     assert result.exit_code == 0, result.exception
+    scanner.assert_not_called()
+    cmd = popen.call_args.args[0]
+    assert cmd[-3:] == ["--scan-only", "--scan-interval", "12.0"]
+    proc.send_signal.assert_called_once()
+    proc.wait.assert_called_once()
+
+
+def test_scan_only_skips_server(tmp_path, monkeypatch):
+    scanner = Mock()
+    monkeypatch.setattr(SlideProject, "scan_in_background", scanner)
+    run = Mock()
+    monkeypatch.setattr("flask.Flask.run", run)
+    monkeypatch.setattr("slidedesk.cli.signal.signal", Mock())
+    monkeypatch.setattr("threading.Event.wait", lambda self, timeout=None: True)
+    result = CliRunner().invoke(
+        main, [str(tmp_path), "--scan-only", "--scan-interval", "12"]
+    )
+    assert result.exit_code == 0, result.exception
     scanner.assert_called_once_with(interval=12.0)
+    run.assert_not_called()

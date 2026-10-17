@@ -1,12 +1,54 @@
 """Command-line entry point: `slidedesk <folder>`."""
 from __future__ import annotations
 
+import signal
+import subprocess
+import sys
 import threading
 import webbrowser
 
 import click
 
 from .project import SlideProject
+
+
+def _start_scan_process(folder: str, scan_interval: float) -> subprocess.Popen:
+    cmd = [sys.executable, "-m", "slidedesk.cli", folder, "--scan-only",
+           "--scan-interval", str(scan_interval)]
+    kwargs = {}
+    if sys.platform == "win32":
+        # A separate group lets us deliver CTRL_BREAK without hitting this process.
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen(cmd, **kwargs)
+
+
+def _stop_scan_process(proc: subprocess.Popen, timeout: float = 30.0) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.send_signal(signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM)
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    except OSError:
+        pass
+
+
+def _run_scan_only(folder: str, scan_interval: float) -> None:
+    stop = threading.Event()
+    handler = lambda *_: stop.set()
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, handler)
+    project = SlideProject(folder)
+    try:
+        project.scan_in_background(interval=scan_interval)
+        while not stop.wait(0.5):
+            pass
+    finally:
+        project.close()
 
 
 @click.command()
@@ -22,13 +64,25 @@ from .project import SlideProject
     type=float,
     help="Seconds between background folder scans.",
 )
-def main(folder: str, host: str, port: int, no_browser: bool, scan_interval: float, no_scan: bool = False) -> None:
-    """Open (or create) a project in FOLDER and start the GUI server."""
+@click.option(
+    "--scan-only",
+    is_flag=True,
+    help="Run only the background scan and embedding worker, without the web server.",
+)
+def main(folder: str, host: str, port: int, no_browser: bool, scan_interval: float,
+         no_scan: bool = False, scan_only: bool = False) -> None:
+    """Open (or create) a project in FOLDER and start the GUI server.
+
+    Unless --no-scan is given, scanning and embedding run in a --scan-only subprocess.
+    """
+    if scan_only:
+        _run_scan_only(folder, scan_interval)
+        return
+
     from .server.app import create_app
 
     project = SlideProject(folder)
-    if not no_scan:
-        project.scan_in_background(interval=scan_interval)
+    scan_proc = None if no_scan else _start_scan_process(folder, scan_interval)
 
     app = create_app(project, scan_enabled=not no_scan)
 
@@ -39,6 +93,8 @@ def main(folder: str, host: str, port: int, no_browser: bool, scan_interval: flo
     try:
         app.run(host=host, port=port, threaded=True, use_reloader=False)
     finally:
+        if scan_proc is not None:
+            _stop_scan_process(scan_proc)
         project.close()
 
 

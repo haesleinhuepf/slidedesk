@@ -96,6 +96,7 @@ def test_cli_uses_default_embeddings(tmp_path, monkeypatch):
     app = Mock()
     monkeypatch.setattr("slidedesk.cli.SlideProject", factory)
     monkeypatch.setattr("slidedesk.server.app.create_app", Mock(return_value=app))
+    monkeypatch.setattr("slidedesk.cli.subprocess.Popen", Mock())
     result = CliRunner().invoke(main, [str(tmp_path), "--no-browser"])
     assert result.exit_code == 0, result.output
     factory.assert_called_once_with(str(tmp_path))

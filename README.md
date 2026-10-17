@@ -51,6 +51,21 @@ This disables startup and recurring folder scans.
 The background embedding worker is also stopped in this mode. You can still
 explicitly refresh an individual indexed deck from the GUI.
 
+### Background scan process
+
+The GUI server itself does not scan or compute embeddings. Unless `--no-scan` is
+given, it starts a second `slidedesk` process with `--scan-only`, which runs only
+the recurring folder scan and the embedding worker (no web server). The GUI still
+shows embedding progress, since both processes share `slidedesk.db`. When the GUI
+process exits, it signals the scan process to shut down (Ctrl+Break on Windows,
+SIGTERM elsewhere) and kills it if it does not stop within 30 seconds.
+
+You can also run the scan process on its own:
+
+```bash
+slidedesk /path/to/folder --scan-only --scan-interval 5
+```
+
 ## How it works under the hood 
 
 SlideDesk downloads models from Hugging Face on first use, to run them locally
