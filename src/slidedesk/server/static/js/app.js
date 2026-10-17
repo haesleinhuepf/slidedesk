@@ -490,10 +490,12 @@
 
   // Thumbnails are loaded by a polling loop: an attempt is abandoned after the timeout
   // and retried on a later tick, as long as the slide is still on screen.
-  const IMAGE_LOAD_TIMEOUT_MS = 500;
+  const IMAGE_LOAD_TIMEOUT_MS = 1000;
   const IMAGE_LOOP_INTERVAL_MS = 200;
   const MAX_CONCURRENT_IMAGE_LOADS = 6;
   const IMAGE_REPORT_INTERVAL_MS = 2000;
+  const IMAGE_MAX_BACKOFF_MS = 5000;
+  const IMAGE_ERROR_RETRY_MS = 5000;
   const imageStats = { timeouts: 0, lastReport: 0 };
 
   function reportImageStatus(payload) {
@@ -526,6 +528,7 @@
     };
     const onError = () => {
       img.removeAttribute("src");
+      img.dataset.retryAt = Date.now() + IMAGE_ERROR_RETRY_MS;
       reportImageStatus({ event: "error", slide_id: slideIdOf(img) });
       finish();
     };
@@ -533,6 +536,8 @@
     img.addEventListener("error", onError);
     timer = setTimeout(() => {
       img.removeAttribute("src"); // aborts the pending request
+      const backoff = Math.min(IMAGE_LOAD_TIMEOUT_MS * Number(img.dataset.attempts), IMAGE_MAX_BACKOFF_MS);
+      img.dataset.retryAt = Date.now() + backoff;
       imageStats.timeouts += 1;
       reportImageStatus({ event: "timeout", slide_id: slideIdOf(img) });
       finish();
@@ -549,15 +554,16 @@
     let onScreen = 0;
     // Least-attempted first, so slides that keep timing out don't starve the others.
     const queue = Array.from(pending).sort((a, b) => (Number(a.dataset.attempts) || 0) - (Number(b.dataset.attempts) || 0));
+    const now = Date.now();
     for (const img of queue) {
       const r = img.getBoundingClientRect();
       if (r.right < view.left || r.left > view.right || r.bottom < view.top || r.top > view.bottom) continue;
       onScreen += 1;
       if (active >= MAX_CONCURRENT_IMAGE_LOADS || img.dataset.loading) continue;
+      if (now < Number(img.dataset.retryAt || 0)) continue;
       startImageLoad(img);
       active += 1;
     }
-    const now = Date.now();
     if (onScreen && now - imageStats.lastReport >= IMAGE_REPORT_INTERVAL_MS) {
       imageStats.lastReport = now;
       reportImageStatus({

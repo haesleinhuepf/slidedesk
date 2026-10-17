@@ -20,6 +20,8 @@ from pptx import Presentation
 logger = logging.getLogger(__name__)
 
 _render_lock = threading.RLock()
+# Decks whose rendering raised; keyed by (path, mtime_ns, size, strip) so edits retry.
+_failed_renders: dict = {}
 
 
 def _render_presentation(prs) -> list:
@@ -99,9 +101,17 @@ def render_slide_image(
 
 def _render_and_cache(pptx_path: Path, index: int, cache_dir: Path, strip: bool) -> Image.Image:
     stat = pptx_path.stat()
+    failure_key = (pptx_path, stat.st_mtime_ns, stat.st_size, strip)
+    if failure_key in _failed_renders:
+        raise ValueError(f"Rendering {pptx_path.name} failed earlier: {_failed_renders[failure_key]}")
     logger.warning("Slide %d of %s is not cached; rendering the deck now", index + 1, pptx_path)
     started = time.monotonic()
-    rendered = _render_deck_cached(pptx_path, stat.st_mtime_ns, stat.st_size, strip)
+    try:
+        rendered = _render_deck_cached(pptx_path, stat.st_mtime_ns, stat.st_size, strip)
+    except Exception as exc:
+        logger.exception("Rendering %s failed after %.1fs", pptx_path, time.monotonic() - started)
+        _failed_renders[failure_key] = f"{type(exc).__name__}: {exc}"
+        raise ValueError(f"Rendering {pptx_path.name} failed: {exc}") from exc
     logger.warning("Rendered %s in %.1fs", pptx_path.name, time.monotonic() - started)
     if not 0 <= index < len(rendered):
         raise ValueError(f"Slide {index} not found in {pptx_path}")
@@ -122,4 +132,5 @@ def cache_deck_images(pptx_path: Path, cache_dir: Path) -> None:
 
 
 def clear_cache() -> None:
+    _failed_renders.clear()
     _render_deck_cached.cache_clear()
