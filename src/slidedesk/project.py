@@ -86,6 +86,7 @@ class SlideProject:
         self._export_lock = threading.Lock()
         self._export_number = 0
         self._image_embedding_lock = threading.Lock()
+        self._renderer = images.BackgroundRenderer(self.cache_dir)
 
     # -- indexing -----------------------------------------------------
     def scan(self, stop_event: Optional[threading.Event] = None) -> None:
@@ -128,6 +129,8 @@ class SlideProject:
         print("Closing SlideDesk project...")
         print("Stopping background scan...")
         self.stop_background_scan()
+        print("Stopping slide rendering...")
+        self._renderer.stop()
         convert.shutdown()
         print("Closing database connection...")
         self.conn.close()
@@ -159,6 +162,51 @@ class SlideProject:
                     (deck_id,),
                 ).fetchall()
         return [Slide.from_row(r) for r in rows]
+
+    def slides_by_deck(self, deck_ids: Optional[List[int]] = None) -> dict:
+        """Slides grouped by deck id, in deck order, from a single query.
+
+        All decks by default, or only those in `deck_ids`.
+        """
+        with self._conn_lock:
+            if deck_ids is None:
+                rows = self.conn.execute(
+                    "SELECT * FROM slides ORDER BY deck_id, index_in_deck"
+                ).fetchall()
+            else:
+                ids = [int(i) for i in deck_ids]
+                rows = []
+                # Chunk to stay below SQLite's bound-parameter limit on old versions.
+                for start in range(0, len(ids), 500):
+                    chunk = ids[start:start + 500]
+                    rows += self.conn.execute(
+                        f"SELECT * FROM slides WHERE deck_id IN ({','.join('?' * len(chunk))}) "
+                        "ORDER BY deck_id, index_in_deck",
+                        chunk,
+                    ).fetchall()
+        grouped = {}
+        for row in rows:
+            slide = Slide.from_row(row)
+            grouped.setdefault(slide.deck_id, []).append(slide)
+        return grouped
+
+    def deck_revisions(self) -> dict:
+        """Map each deck id to a string that changes whenever the deck's metadata
+        or its slides (added, reindexed, hidden/unhidden) change.
+
+        `last_scanned` is excluded because every scan pass updates it. Reindexing
+        always creates new slide ids (AUTOINCREMENT), so slide text changes are
+        covered by the ids without reading the text.
+        """
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT d.id, d.pptx_path, d.pptx_mtime, d.pdf_path, d.pdf_mtime, "
+                "d.hidden_pdf_path, d.hidden_pdf_mtime, s.slides FROM decks d "
+                "LEFT JOIN (SELECT deck_id, group_concat(id || ':' || hidden) AS slides "
+                "FROM (SELECT deck_id, id, hidden FROM slides ORDER BY deck_id, id) "
+                "GROUP BY deck_id) s ON s.deck_id = d.id"
+            ).fetchall()
+        return {row["id"]: repr(tuple(row)[1:]) for row in rows}
 
     def slide(self, slide_id: int) -> Optional[Slide]:
         with self._conn_lock:
@@ -218,11 +266,11 @@ class SlideProject:
                 "LEFT JOIN slide_image_embeddings e ON e.slide_id = s.id AND e.model = ?",
                 (self.IMAGE_EMBEDDING_MODEL,),
             ).fetchall()
-            image_done = sum(
-                row["source_key"] is not None
-                and row["source_key"] == self._image_source_key(row["id"])
-                for row in image_rows
-            )
+        keys = self._image_source_keys()
+        image_done = sum(
+            row["source_key"] is not None and row["source_key"] == keys.get(row["id"])
+            for row in image_rows
+        )
         return {
             "available": self._embeddings_available(), "total": total, "embedded": done,
             "vision": {"available": image_embeddings.is_available(),
@@ -288,6 +336,32 @@ class SlideProject:
         return repr((deck.pptx_path, stat.st_mtime_ns, stat.st_size,
                      slide.index_in_deck, strip))
 
+    def _image_source_keys(self, strip: bool = False) -> dict:
+        """Bulk `_image_source_key` for all slides: one query and one stat per deck.
+
+        File system access happens outside the DB lock, so status polling does not
+        block other requests on large collections.
+        """
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT s.id, s.index_in_deck, d.pptx_path FROM slides s "
+                "JOIN decks d ON d.id = s.deck_id"
+            ).fetchall()
+        stats = {}
+        keys = {}
+        for row in rows:
+            pptx_path = row["pptx_path"]
+            if pptx_path not in stats:
+                try:
+                    stats[pptx_path] = (self.folder / pptx_path).stat()
+                except OSError:
+                    stats[pptx_path] = None
+            stat = stats[pptx_path]
+            if stat is not None:
+                keys[row["id"]] = repr((pptx_path, stat.st_mtime_ns, stat.st_size,
+                                        row["index_in_deck"], strip))
+        return keys
+
     def embed_images_pending(self, limit: int = 20, stop_event=None) -> int:
         """Cache all renderable slides, including hidden slides and empty text.
 
@@ -310,10 +384,11 @@ class SlideProject:
                     f"SELECT s.id, e.model, e.source_key FROM slides s "
                     f"LEFT JOIN {table} e ON e.slide_id = s.id ORDER BY s.id"
                 ).fetchall()
+            keys = self._image_source_keys(strip)
             for row in rows:
                 if count >= limit or (stop_event is not None and stop_event.is_set()):
                     break
-                key = self._image_source_key(row["id"], strip)
+                key = keys.get(row["id"])
                 if key is None or (row["model"] == self.IMAGE_EMBEDDING_MODEL
                                    and row["source_key"] == key):
                     continue
@@ -350,32 +425,32 @@ class SlideProject:
                 count += 1
         return count
 
-    def _similar_cached(self, slide_id: int, image: bool = False, strip: bool = False) -> List[int]:
+    def _similar_cached(self, slide_id: int, image: bool = False, strip: bool = False,
+                        limit: Optional[int] = None) -> List[int]:
         image = image or strip
         if strip:
             table = "slide_strip_image_embeddings"
         else:
             table = "slide_image_embeddings" if image else "slide_embeddings"
         model = self.IMAGE_EMBEDDING_MODEL if image else self.EMBEDDING_MODEL
+        # Bulk keys: one query and one stat per deck instead of per candidate slide.
+        keys = self._image_source_keys(strip) if image else None
         with self._conn_lock:
             row = self.conn.execute(
                 f"SELECT * FROM {table} WHERE slide_id = ? AND model = ?",
                 (slide_id, model),
             ).fetchone()
-            if row is None or (image and row["source_key"] != self._image_source_key(slide_id, strip)):
+            if row is None or (image and row["source_key"] != keys.get(slide_id)):
                 return []
             target = embeddings.unpack_vector(row["vector"])
             rows = self.conn.execute(
                 f"SELECT * FROM {table} WHERE model = ? AND slide_id != ? ORDER BY slide_id",
                 (model, slide_id),
             ).fetchall()
-        scored = [
-            (embeddings.cosine_similarity(target, embeddings.unpack_vector(row["vector"])), row["slide_id"])
-            for row in rows
-            if not image or row["source_key"] == self._image_source_key(row["slide_id"], strip)
-        ]
-        scored.sort(key=lambda t: t[0], reverse=True)
-        return [sid for _, sid in scored]
+        if image:
+            rows = [r for r in rows if r["source_key"] == keys.get(r["slide_id"])]
+        order = embeddings.rank_by_cosine(target, [r["vector"] for r in rows], limit)
+        return [rows[i]["slide_id"] for i in order]
 
     def similar_slides(self, slide_id: int, top_k: int = 16) -> List[Slide]:
         """Strip-layout image matches first, then image matches, then text matches.
@@ -386,9 +461,10 @@ class SlideProject:
         """
         if top_k <= 0:
             return []
-        stripped = self._similar_cached(slide_id, strip=True)
-        visual = self._similar_cached(slide_id, image=True)
-        textual = self._similar_cached(slide_id)
+        # The merge below never uses more than top_k entries of any list.
+        stripped = self._similar_cached(slide_id, strip=True, limit=top_k)
+        visual = self._similar_cached(slide_id, image=True, limit=top_k)
+        textual = self._similar_cached(slide_id, limit=top_k)
         primary = list(dict.fromkeys(stripped + visual))
         ids = list(dict.fromkeys(primary[:(top_k + 1) // 2] + stripped + textual + visual))[:top_k]
         slides = [self.slide(sid) for sid in ids]
@@ -402,12 +478,8 @@ class SlideProject:
                 "SELECT slide_id, vector FROM slide_embeddings WHERE model = ?",
                 (self.EMBEDDING_MODEL,),
             ).fetchall()
-        scored = [
-            (embeddings.cosine_similarity(query_vector, embeddings.unpack_vector(row["vector"])), row["slide_id"])
-            for row in rows
-        ]
-        scored.sort(key=lambda t: t[0], reverse=True)
-        slides = [self.slide(slide_id) for _, slide_id in scored[:top_k]]
+        order = embeddings.rank_by_cosine(query_vector, [row["vector"] for row in rows], top_k)
+        slides = [self.slide(rows[i]["slide_id"]) for i in order]
         return [s for s in slides if s is not None]
 
     # -- rendering --------------------------------------------------------
@@ -425,6 +497,32 @@ class SlideProject:
         return images.render_slide_image(
             self.folder / deck.pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout
         )
+
+    def slide_image_path(self, slide_id: int, layout: bool = True) -> Optional[Path]:
+        """Return the cached PNG of a slide without rendering it.
+
+        If the slide is not rendered yet, its deck is queued for background rendering
+        and None is returned. Raises KeyError or FileNotFoundError for unknown slides
+        and missing decks, and images.RenderError if the deck cannot be rendered.
+        """
+        slide = self.slide(slide_id)
+        if slide is None:
+            raise KeyError(f"No such slide: {slide_id}")
+        deck = self.deck(slide.deck_id)
+        if deck is None:
+            raise KeyError(f"No such deck: {slide.deck_id}")
+        pptx_path = self.folder / deck.pptx_path
+        if not pptx_path.is_file():
+            raise FileNotFoundError(f"No such file: {deck.pptx_path}")
+        cached = images.cached_path(pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout)
+        if cached is not None:
+            return cached
+        failure = images.render_failure(pptx_path, strip=not layout)
+        if failure is not None:
+            raise images.RenderError(f"Rendering {deck.pptx_path} failed: {failure}")
+        self._renderer.request(pptx_path, strip=not layout)
+        return None
+
     def slide_pptx_object(self, slide_id: int) -> PptxSlide:
         """Open the source .pptx and return the python-pptx Slide object."""
         slide = self.slide(slide_id)

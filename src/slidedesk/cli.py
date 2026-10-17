@@ -1,6 +1,8 @@
 """Command-line entry point: `slidedesk <folder>`."""
 from __future__ import annotations
 
+import importlib
+import logging
 import os
 import signal
 import subprocess
@@ -34,6 +36,15 @@ def _stop_scan_process(proc: subprocess.Popen, timeout: float = 15.0) -> None:
         proc.wait()
     except OSError:
         pass
+
+
+def _preload_torch() -> None:
+    """Import torch up front so the first similarity or semantic search doesn't pay for it."""
+    print("Loading torch...")
+    try:
+        importlib.import_module("torch")
+    except ImportError:
+        logging.getLogger(__name__).warning("torch is not installed; embedding search is unavailable.")
 
 
 def _run_scan_only(folder: str, scan_interval: float) -> None:
@@ -86,8 +97,12 @@ def main(folder: str, host: str, port: int, no_browser: bool, scan_interval: flo
 
     from .server.app import create_app
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
     project = SlideProject(folder)
     scan_proc = None if no_scan else _start_scan_process(folder, scan_interval)
+    # After starting the scan subprocess, so both start up in parallel.
+    _preload_torch()
 
     app = create_app(
         project,

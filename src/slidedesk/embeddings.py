@@ -9,7 +9,7 @@ from __future__ import annotations
 import array
 import math
 import threading
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 DEFAULT_MODEL = "intfloat/multilingual-e5-large-instruct"
 
@@ -109,4 +109,27 @@ def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def rank_by_cosine(target: Sequence[float], blobs: Sequence[bytes],
+                   limit: Optional[int] = None) -> List[int]:
+    """Return indices into `blobs` (packed vectors), most similar to `target` first.
+
+    Scores all vectors in one matrix product. Ties keep their input order, and
+    vectors whose size differs from `target` are skipped.
+    """
+    import torch
+
+    size = len(target) * array.array("f").itemsize
+    indices = [i for i, blob in enumerate(blobs) if len(blob) == size]
+    if not indices or size == 0:
+        return []
+    matrix = torch.frombuffer(bytearray(b"".join(blobs[i] for i in indices)),
+                              dtype=torch.float32).reshape(len(indices), len(target))
+    query = torch.tensor(list(target), dtype=torch.float32)
+    scores = torch.nn.functional.normalize(matrix, dim=1) @ torch.nn.functional.normalize(query, dim=0)
+    order = torch.sort(scores, descending=True, stable=True).indices
+    if limit is not None:
+        order = order[:limit]
+    return [indices[i] for i in order.tolist()]
     

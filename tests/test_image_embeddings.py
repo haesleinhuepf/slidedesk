@@ -28,6 +28,11 @@ def project(tmp_path, monkeypatch):
         project, "_image_source_key",
         lambda sid, strip=False: None if strip else source_key(sid, strip),
     )
+    source_keys = project._image_source_keys
+    monkeypatch.setattr(
+        project, "_image_source_keys",
+        lambda strip=False: {} if strip else source_keys(strip),
+    )
     try:
         yield project
     finally:
@@ -225,3 +230,33 @@ def test_real_clip_inference_without_model_download(monkeypatch):
     assert len(vector) == 16
     assert all(math.isfinite(value) for value in vector)
     assert not model.training
+
+
+@pytest.mark.parametrize("strip", [False, True])
+def test_bulk_source_keys_match_single_lookup(tmp_path, strip):
+    project = SlideProject(tmp_path)
+    try:
+        for name in ("a.pptx", "b.pptx", "missing.pptx"):
+            if name != "missing.pptx":
+                (tmp_path / name).write_bytes(name.encode())
+            deck = project.conn.execute(
+                "INSERT INTO decks (pptx_path, pptx_mtime) VALUES (?, 0)", (name,)
+            ).lastrowid
+            for i in range(3):
+                project.conn.execute(
+                    "INSERT INTO slides (deck_id, index_in_deck, text) VALUES (?, ?, 'x')", (deck, i)
+                )
+        project.conn.commit()
+        slide_ids = [r[0] for r in project.conn.execute("SELECT id FROM slides")]
+        expected = {sid: project._image_source_key(sid, strip) for sid in slide_ids}
+        expected = {sid: key for sid, key in expected.items() if key is not None}
+        assert len(expected) == 6
+        assert project._image_source_keys(strip) == expected
+    finally:
+        project.close()
+
+
+def test_similar_slides_checks_source_keys_in_bulk(project, monkeypatch):
+    seed_vectors(project)
+    monkeypatch.setattr(project, "_image_source_key", Mock(side_effect=AssertionError))
+    assert [s.id for s in project.similar_slides(1, top_k=4)] == [2, 3, 5, 4]

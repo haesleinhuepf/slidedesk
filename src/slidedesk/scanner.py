@@ -123,10 +123,12 @@ def _scan_once(
 
         if needs_reindex:
             # Cache images before the deck is added to the database.
-            try:
-                images.cache_deck_images(pptx_path, project.cache_dir)
-            except Exception as exc:
-                log.warning("Image caching failed for %s: %s", rel_pptx, exc)
+            for strip in (False, True):
+                try:
+                    images.render_deck(pptx_path, project.cache_dir, strip=strip, stop_event=stop_event)
+                except Exception as exc:
+                    log.warning("Image caching failed for %s: %s", rel_pptx, exc)
+                    break
             if stop_event and stop_event.is_set():
                 break
 

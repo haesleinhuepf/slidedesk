@@ -40,3 +40,22 @@ def test_embed_pending_strips_html(tmp_path, monkeypatch, source, expected):
         assert project.embed_pending() == 0
     finally:
         project.close()
+
+
+def test_rank_by_cosine_matches_pairwise_similarity():
+    target = [1.0, 0.5, 0.0]
+    vectors = [[0.0, 1.0, 0.0], [2.0, 1.0, 0.0], [1.0, 0.5, 0.0], [-1.0, 0.0, 0.0],
+               [0.0, 0.0, 0.0], [1.0, 0.0, 1.0]]
+    blobs = [embeddings.pack_vector(v) for v in vectors]
+    expected = sorted(range(len(vectors)),
+                      key=lambda i: -embeddings.cosine_similarity(target, vectors[i]))
+    # Equal vectors tie; the earlier input keeps precedence.
+    assert embeddings.rank_by_cosine(target, blobs) == expected == [1, 2, 5, 0, 4, 3]
+    assert embeddings.rank_by_cosine(target, blobs, limit=2) == [1, 2]
+
+
+def test_rank_by_cosine_skips_mismatched_and_empty_vectors():
+    blobs = [embeddings.pack_vector([1.0, 0.0]), embeddings.pack_vector([1.0, 0.0, 0.0])]
+    assert embeddings.rank_by_cosine([1.0, 0.0, 0.0], blobs) == [1]
+    assert embeddings.rank_by_cosine([1.0, 0.0, 0.0], []) == []
+    assert embeddings.rank_by_cosine([], blobs) == []

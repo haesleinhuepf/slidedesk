@@ -10,6 +10,15 @@
 (function () {
   "use strict";
 
+  // Stamp API requests with the browser send time so the server can print how
+  // long each action took to start (see trace hooks in server/app.py).
+  const nativeFetch = window.fetch.bind(window);
+  function fetch(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    headers.set("X-Client-Time", String(Date.now()));
+    return nativeFetch(url, { ...options, headers });
+  }
+
   const SLIDE_HEIGHT = 140;
   const SLIDE_WIDTH = Math.round((SLIDE_HEIGHT * 16) / 9);
   const GAP = 18;
@@ -33,6 +42,7 @@
 
   const state = {
     decks: [],
+    decksVersion: "", // version of `decks` reported by /api/decks
     deckById: new Map(),
     slidesById: new Map(), // slide id -> { slide, deck }
     mode: "pool", // "pool" | "search" | "deck" | "similar"
@@ -358,9 +368,21 @@
 
   // -- data loading -------------------------------------------------------
   async function loadDecks() {
-    const res = await fetch("/api/decks");
-    const decks = await res.json();
-    state.decks = decks;
+    // Incremental: the server sends only decks changed since `decksVersion`.
+    const res = await fetch(`/api/decks?since=${encodeURIComponent(state.decksVersion)}`);
+    const data = await res.json();
+    if (!data.full && !data.decks.length && !data.removed.length) {
+      state.decksVersion = data.version;
+      return;
+    }
+    if (data.full) {
+      state.decks = data.decks;
+    } else {
+      const replaced = new Set(data.removed.concat(data.decks.map((d) => d.id)));
+      state.decks = state.decks.filter((d) => !replaced.has(d.id)).concat(data.decks);
+      state.decks.sort((a, b) => (a.pptx_path < b.pptx_path ? -1 : a.pptx_path > b.pptx_path ? 1 : 0));
+    }
+    state.decksVersion = data.version;
     indexData();
     if (state.mode === "pool") {
       updateSelectionUi();
@@ -470,8 +492,18 @@
   }
 
   // -- rendering (pool / search / deck) --------------------------------------
+  // The deck's modification time in the URL lets the browser cache images safely.
   function slideImageUrl(id) {
-    return `/api/slides/${id}/image${state.showLayout ? "" : "?layout=false"}`;
+    const params = new URLSearchParams();
+    const deck = state.slidesById.get(id)?.deck;
+    if (deck) params.set("v", deck.pptx_mtime);
+    if (!state.showLayout) params.set("layout", "false");
+    return `/api/slides/${id}/image?${params}`;
+  }
+
+  function slideImageTag(id, attrs = "") {
+    const url = slideImageUrl(id);
+    return `<img loading="lazy" decoding="async" src="${url}" data-src="${url}" ${attrs} />`;
   }
 
   function thumbClasses(item) {
@@ -485,8 +517,29 @@
   function thumbInnerHTML(item) {
     const badge = item.slide.hidden ? '<span class="badge">hidden</span>' : "";
     const label = `<span class="deck-label">${escapeHtml(item.deck.name)} #${item.slide.index_in_deck + 1} / ${item.deck.slides.length}</span>`;
-    return `<img loading="lazy" src="${slideImageUrl(item.slide.id)}" alt="slide ${item.slide.index_in_deck + 1}" />${badge}${label}`;
+    return `${slideImageTag(item.slide.id, `alt="slide ${item.slide.index_in_deck + 1}"`)}${badge}${label}`;
   }
+
+  // Slide images are plain lazy <img> elements. While a slide is not rendered yet the
+  // server answers 202, which fails the <img>; it is then reloaded with growing delays
+  // for as long as it is part of the page.
+  const IMAGE_RETRY_MAX_DELAY_MS = 5000;
+
+  function retryImage(event) {
+    const img = event.target;
+    if (!(img instanceof HTMLImageElement) || !img.dataset.src) return;
+    const attempt = Number(img.dataset.attempt || 0) + 1;
+    img.dataset.attempt = attempt;
+    setTimeout(() => {
+      if (!img.isConnected) return;
+      const url = new URL(img.dataset.src, window.location.href);
+      url.searchParams.set("attempt", attempt);
+      img.src = url.href;
+    }, Math.min(500 * attempt, IMAGE_RETRY_MAX_DELAY_MS));
+  }
+
+  // <img> error events do not bubble, so listen in the capture phase.
+  canvasNode.addEventListener("error", retryImage, true);
 
   function renderStatic(items) {
     renderedItems = items;
@@ -521,7 +574,13 @@
       .attr("class", thumbClasses)
       .attr("data-slide-id", (d) => d.slide.id)
       .attr("title", (d) => `${d.deck.name} — slide ${d.slide.index_in_deck + 1}`)
-      .html(thumbInnerHTML);
+      .each(function (d) {
+        // Rewriting identical markup would recreate the <img> and reload it.
+        const markup = thumbInnerHTML(d);
+        if (this.__markup === markup) return;
+        this.__markup = markup;
+        this.innerHTML = markup;
+      });
 
     entered
       .merge(sel)
@@ -568,7 +627,12 @@
       focusSlideId: state.focusSlideId,
       similarSlideIds: [...(state.similarSlideIds || [])],
       showHidden: state.showHidden,
-      transform: d3.zoomTransform(viewport),
+      // The row wrapping depends on past zooms, so keep it with the transform.
+      view: {
+        transform: d3.zoomTransform(viewport),
+        cols: layoutCols,
+        anchor: layoutAnchor && { ...layoutAnchor },
+      },
     };
   }
 
@@ -576,10 +640,42 @@
     if (navigationHistory.length) navigationHistory[historyIndex] = captureLocation();
   }
 
+  function sameItems(a, b) {
+    a = [...a];
+    b = [...b];
+    return a.length === b.length && a.every((value, i) => value === b[i]);
+  }
+
+  function sameLocation(a, b) {
+    const ta = a.view.transform;
+    const tb = b.view.transform;
+    return a.mode === b.mode
+      && a.searchQuery === b.searchQuery
+      && a.searchMode === b.searchMode
+      && a.advancedSearch === b.advancedSearch
+      && sameItems(a.searchOrder, b.searchOrder)
+      && sameItems(a.matchedSlideIds, b.matchedSlideIds)
+      && a.focusDeckId === b.focusDeckId
+      && a.focusSlideId === b.focusSlideId
+      && sameItems(a.similarSlideIds, b.similarSlideIds)
+      && a.showHidden === b.showHidden
+      && ta.x === tb.x && ta.y === tb.y && ta.k === tb.k
+      && a.view.cols === b.view.cols
+      && (a.view.anchor && a.view.anchor.id) === (b.view.anchor && b.view.anchor.id)
+      && (a.view.anchor && a.view.anchor.left) === (b.view.anchor && b.view.anchor.left);
+  }
+
+  // Call after the new view is laid out and positioned, so the entry records
+  // what is shown. Revisiting exactly the current view adds no entry.
   function recordLocation() {
+    const location = captureLocation();
+    if (navigationHistory.length && sameLocation(location, navigationHistory[historyIndex])) {
+      updateBreadcrumb();
+      return;
+    }
     navigationHistory.splice(0, historyIndex);
     historyIndex = 0;
-    navigationHistory.unshift(captureLocation());
+    navigationHistory.unshift(location);
     updateBreadcrumb();
   }
 
@@ -614,14 +710,19 @@
     d3.select(viewport).interrupt();
     saveLocation();
     historyIndex = index;
-    const { transform, ...location } = navigationHistory[index];
+    const { view, ...location } = navigationHistory[index];
     Object.assign(state, location);
     document.getElementById("search-box").value = state.searchQuery;
     document.getElementById("search-mode").value = state.searchMode;
     document.getElementById("toggle-hidden").checked = state.showHidden;
     hideContextMenu();
+    // Show the view exactly as it was left: same row wrapping, zoom and position.
+    interruptView();
+    layoutCols = view.cols;
+    layoutAnchor = view.anchor && { ...view.anchor };
+    applyView(view.transform);
     render();
-    fitView();
+    applyView(clampTransform(view.transform));
     updateBreadcrumb();
   }
 
@@ -652,9 +753,9 @@
     state.mode = "similar";
     state.similarSlideIds = similar.map((slide) => slide.id);
     state.focusSlideId = slideId;
-    recordLocation();
     startSimilarSimulation(entry.slide, similar);
     fitView(clickedPosition);
+    recordLocation();
   }
 
   async function copySlideToClipboard(slideId) {
@@ -857,9 +958,9 @@
     state.focusDeckId = entry.deck.id;
     state.focusSlideId = slideId;
     state.mode = "deck";
-    recordLocation();
     render();
     fitView(clickedPosition);
+    recordLocation();
   }
 
   function toggleSelection(slideId) {
@@ -893,6 +994,7 @@
   }
 
   const selectionList = document.getElementById("selected-slides");
+  selectionList.addEventListener("error", retryImage, true);
   let draggedSlideId = null;
   let selectionPressTimer = null;
   let selectionPressStart = null;
@@ -912,8 +1014,11 @@
       const { slide, deck } = state.slidesById.get(id);
       const label = `${i + 1}. ${deck.name} #${slide.index_in_deck + 1} / ${deck.slides.length}`;
       this.setAttribute("aria-label", label);
-      const markup = `<img loading="lazy" draggable="false" src="${slideImageUrl(id)}" alt="" /><span>${escapeHtml(label)}</span>`;
-      if (this.innerHTML !== markup) this.innerHTML = markup;
+      // Rewriting identical markup would recreate the <img> and reload it.
+      const markup = `${slideImageTag(id, 'draggable="false" alt=""')}<span>${escapeHtml(label)}</span>`;
+      if (this.__markup === markup) return;
+      this.__markup = markup;
+      this.innerHTML = markup;
     });
     cards.order();
   }
@@ -1077,6 +1182,12 @@
     const { slide, deck } = entry;
     const hidden = entireDeck ? !deck.slides.every((s) => s.hidden) : !slide.hidden;
     const url = entireDeck ? `/api/decks/${deck.id}/slides/hidden` : `/api/slides/${slide.id}/hidden`;
+    // Update the view optimistically; the request may wait behind background scanning.
+    const affected = entireDeck ? deck.slides : [slide];
+    const previous = affected.map((s) => s.hidden);
+    affected.forEach((s) => { s.hidden = hidden; });
+    updateSelectionUi();
+    render();
     try {
       const res = await fetch(url, {
         method: "PATCH",
@@ -1085,10 +1196,10 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Could not change visibility");
-      await loadDecks();
+    } catch (error) {
+      affected.forEach((s, i) => { s.hidden = previous[i]; });
       updateSelectionUi();
       render();
-    } catch (error) {
       window.alert(error.message);
     }
   }
@@ -1220,9 +1331,9 @@
       state.mode = "pool";
       state.matchedSlideIds = new Set();
       state.searchOrder = [];
-      recordLocation();
       render();
       fitView();
+      recordLocation();
       return;
     }
     const mode = document.getElementById("search-mode").value;
@@ -1250,9 +1361,9 @@
     state.searchOrder = order;
     state.matchedSlideIds = matched;
     state.mode = "search";
-    recordLocation();
     render();
     fitView();
+    recordLocation();
   }
 
   function advancedSearchTopics(text) {
@@ -1354,9 +1465,9 @@
     state.searchOrder = [];
     state.matchedSlideIds = new Set();
     state.mode = "search";
-    recordLocation();
     render();
     fitView();
+    recordLocation();
     dialog.close();
 
     for (let index = 0; index < topics.length; index += 1) {
@@ -1441,9 +1552,9 @@
     document.getElementById("search-mode").value = "keyword";
     document.getElementById("toggle-hidden").checked = false;
     hideContextMenu();
-    recordLocation();
     render();
     fitView();
+    recordLocation();
   });
 
   document.getElementById("search-btn").addEventListener("click", () => {
@@ -1498,7 +1609,19 @@
   loadDecks().then(() => fitView());
   pollScanStatus();
   pollEmbeddingStatus();
-  setInterval(loadDecks, 5000);
-  setInterval(pollScanStatus, 2000);
-  setInterval(pollEmbeddingStatus, 2000);
+  // Schedule the next poll only after the previous one finished, so slow
+  // responses cannot pile up and occupy the browser's connections.
+  function pollWithoutOverlap(fn, ms) {
+    setTimeout(async () => {
+      try {
+        await fn();
+      } catch (e) {
+        /* ignore transient network errors */
+      }
+      pollWithoutOverlap(fn, ms);
+    }, ms);
+  }
+  pollWithoutOverlap(loadDecks, 5000);
+  pollWithoutOverlap(pollScanStatus, 2000);
+  pollWithoutOverlap(pollEmbeddingStatus, 2000);
 })();

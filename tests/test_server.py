@@ -162,3 +162,118 @@ def test_advanced_semantic_search_preserves_rank_and_validates_limit(indexed_pro
     assert client.post(
         "/api/search/advanced/semantic", json={"query": "intro", "top_k": True}
     ).status_code == 400
+
+
+def test_slide_image_serves_cached_png_without_rendering(indexed_project, monkeypatch):
+    from PIL import Image
+    from slidedesk import images
+
+    project = indexed_project
+    deck = next(d for d in project.decks() if d.name == "available.pptx")
+    slide_id = project.slides(deck.id)[0].id
+    project.cache_dir.mkdir(parents=True, exist_ok=True)
+    key = images._source_key(project.folder / deck.pptx_path, False)
+    cached = images._cache_file(key, 0, project.cache_dir)
+    Image.new("RGB", (4, 3), "red").save(cached)
+    monkeypatch.setattr(project._renderer, "request", lambda *a, **k: pytest.fail("must not render"))
+
+    response = create_app(project).test_client().get(f"/api/slides/{slide_id}/image?v=0")
+    assert response.status_code == 200
+    assert response.mimetype == "image/png"
+    assert response.data == cached.read_bytes()
+    response.close()
+
+
+def test_slide_image_queues_uncached_slides_without_waiting(indexed_project, monkeypatch):
+    project = indexed_project
+    requested = []
+    monkeypatch.setattr(project._renderer, "request",
+                        lambda path, strip=False: requested.append((path.name, strip)))
+    client = create_app(project).test_client()
+    ids = {d.name: project.slides(d.id)[0].id for d in project.decks()}
+
+    response = client.get(f"/api/slides/{ids['available.pptx']}/image?layout=false")
+    assert response.status_code == 202
+    assert response.headers["Cache-Control"] == "no-store"
+    assert requested == [("available.pptx", True)]
+
+    assert client.get(f"/api/slides/{ids['missing.pptx']}/image").status_code == 404
+    assert client.get(f"/api/slides/{ids['directory.pptx']}/image").status_code == 404
+    assert client.get("/api/slides/999/image").status_code == 404
+    assert len(requested) == 1
+
+
+def test_slide_image_reports_failed_rendering(indexed_project, monkeypatch):
+    from slidedesk import images
+
+    project = indexed_project
+    deck = next(d for d in project.decks() if d.name == "available.pptx")
+    slide_id = project.slides(deck.id)[0].id
+    monkeypatch.setattr(project._renderer, "request", lambda *a, **k: pytest.fail("must not render"))
+    key = images._source_key(project.folder / deck.pptx_path, False)
+    monkeypatch.setitem(images._failures, key, "RuntimeError: boom")
+
+    response = create_app(project).test_client().get(f"/api/slides/{slide_id}/image")
+    assert response.status_code == 500
+    assert "boom" in response.get_json()["error"]
+
+
+def test_deck_list_groups_slides_by_deck_in_order(tmp_path):
+    project = SlideProject(tmp_path)
+    try:
+        for name in ("a.pptx", "b.pptx"):
+            (tmp_path / name).touch()
+            deck_id = project.conn.execute(
+                "INSERT INTO decks (pptx_path, pptx_mtime) VALUES (?, 0)", (name,)
+            ).lastrowid
+            for index in (2, 0, 1):
+                project.conn.execute(
+                    "INSERT INTO slides (deck_id, index_in_deck, text) VALUES (?, ?, ?)",
+                    (deck_id, index, f"{name}-{index}"),
+                )
+        project.conn.commit()
+        decks = create_app(project).test_client().get("/api/decks").get_json()
+        assert [[s["text"] for s in d["slides"]] for d in decks] == [
+            ["a.pptx-0", "a.pptx-1", "a.pptx-2"],
+            ["b.pptx-0", "b.pptx-1", "b.pptx-2"],
+        ]
+    finally:
+        project.close()
+
+
+def test_deck_list_sends_only_changes_since_version(indexed_project):
+    project = indexed_project
+    client = create_app(project).test_client()
+
+    first = client.get("/api/decks?since=").get_json()
+    assert first["full"] is True
+    assert [d["name"] for d in first["decks"]] == ["available.pptx"]
+    deck = first["decks"][0]
+
+    unchanged = client.get(f"/api/decks?since={first['version']}").get_json()
+    assert unchanged == {"version": first["version"], "full": False, "decks": [], "removed": []}
+
+    # Scan passes touch last_scanned only; that must not count as a change.
+    project.conn.execute("UPDATE decks SET last_scanned = 123")
+    project.conn.commit()
+    assert client.get(f"/api/decks?since={first['version']}").get_json()["decks"] == []
+
+    project.set_slide_hidden(deck["slides"][0]["id"], True)
+    hidden = client.get(f"/api/decks?since={first['version']}").get_json()
+    assert hidden["full"] is False and hidden["removed"] == []
+    assert [s["hidden"] for d in hidden["decks"] for s in d["slides"]] == [True]
+
+    # Reindexing replaces slides (new ids) even when the text stays the same.
+    project.conn.execute("DELETE FROM slides WHERE deck_id = ?", (deck["id"],))
+    project.conn.execute(
+        "INSERT INTO slides (deck_id, index_in_deck, text) VALUES (?, 0, 'new text')", (deck["id"],)
+    )
+    project.conn.commit()
+    reindexed = client.get(f"/api/decks?since={hidden['version']}").get_json()
+    assert [s["text"] for d in reindexed["decks"] for s in d["slides"]] == ["new text"]
+
+    (project.folder / "available.pptx").unlink()
+    removed = client.get(f"/api/decks?since={reindexed['version']}").get_json()
+    assert removed["decks"] == [] and removed["removed"] == [deck["id"]]
+
+    assert client.get("/api/decks?since=unknown").get_json()["full"] is True

@@ -13,7 +13,7 @@ authors = [{ name = "Robert Haase", email = "robert.haase@uni-leipzig.de" }]
 dependencies = [
     "flask>=3.0",
     "python-pptx>=0.6.23",
-    "render-pptx",
+    "render-pptx>=0.2.0",
     "pillow>=10.0.0",
     "click>=8.1",
     "torch>=2.2",
