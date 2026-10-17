@@ -163,6 +163,51 @@ class SlideProject:
                 ).fetchall()
         return [Slide.from_row(r) for r in rows]
 
+    def slides_by_deck(self, deck_ids: Optional[List[int]] = None) -> dict:
+        """Slides grouped by deck id, in deck order, from a single query.
+
+        All decks by default, or only those in `deck_ids`.
+        """
+        with self._conn_lock:
+            if deck_ids is None:
+                rows = self.conn.execute(
+                    "SELECT * FROM slides ORDER BY deck_id, index_in_deck"
+                ).fetchall()
+            else:
+                ids = [int(i) for i in deck_ids]
+                rows = []
+                # Chunk to stay below SQLite's bound-parameter limit on old versions.
+                for start in range(0, len(ids), 500):
+                    chunk = ids[start:start + 500]
+                    rows += self.conn.execute(
+                        f"SELECT * FROM slides WHERE deck_id IN ({','.join('?' * len(chunk))}) "
+                        "ORDER BY deck_id, index_in_deck",
+                        chunk,
+                    ).fetchall()
+        grouped = {}
+        for row in rows:
+            slide = Slide.from_row(row)
+            grouped.setdefault(slide.deck_id, []).append(slide)
+        return grouped
+
+    def deck_revisions(self) -> dict:
+        """Map each deck id to a string that changes whenever the deck's metadata
+        or its slides (added, reindexed, hidden/unhidden) change.
+
+        `last_scanned` is excluded because every scan pass updates it. Reindexing
+        always creates new slide ids (AUTOINCREMENT), so slide text changes are
+        covered by the ids without reading the text.
+        """
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT d.id, d.pptx_path, d.pptx_mtime, d.pdf_path, d.pdf_mtime, "
+                "d.hidden_pdf_path, d.hidden_pdf_mtime, s.slides FROM decks d "
+                "LEFT JOIN (SELECT deck_id, group_concat(id || ':' || hidden) AS slides "
+                "FROM (SELECT deck_id, id, hidden FROM slides ORDER BY deck_id, id) "
+                "GROUP BY deck_id) s ON s.deck_id = d.id"
+            ).fetchall()
+        return {row["id"]: repr(tuple(row)[1:]) for row in rows}
+
     def slide(self, slide_id: int) -> Optional[Slide]:
         with self._conn_lock:
             row = self.conn.execute("SELECT * FROM slides WHERE id = ?", (slide_id,)).fetchone()
@@ -221,11 +266,11 @@ class SlideProject:
                 "LEFT JOIN slide_image_embeddings e ON e.slide_id = s.id AND e.model = ?",
                 (self.IMAGE_EMBEDDING_MODEL,),
             ).fetchall()
-            image_done = sum(
-                row["source_key"] is not None
-                and row["source_key"] == self._image_source_key(row["id"])
-                for row in image_rows
-            )
+        keys = self._image_source_keys()
+        image_done = sum(
+            row["source_key"] is not None and row["source_key"] == keys.get(row["id"])
+            for row in image_rows
+        )
         return {
             "available": self._embeddings_available(), "total": total, "embedded": done,
             "vision": {"available": image_embeddings.is_available(),
@@ -291,6 +336,32 @@ class SlideProject:
         return repr((deck.pptx_path, stat.st_mtime_ns, stat.st_size,
                      slide.index_in_deck, strip))
 
+    def _image_source_keys(self, strip: bool = False) -> dict:
+        """Bulk `_image_source_key` for all slides: one query and one stat per deck.
+
+        File system access happens outside the DB lock, so status polling does not
+        block other requests on large collections.
+        """
+        with self._conn_lock:
+            rows = self.conn.execute(
+                "SELECT s.id, s.index_in_deck, d.pptx_path FROM slides s "
+                "JOIN decks d ON d.id = s.deck_id"
+            ).fetchall()
+        stats = {}
+        keys = {}
+        for row in rows:
+            pptx_path = row["pptx_path"]
+            if pptx_path not in stats:
+                try:
+                    stats[pptx_path] = (self.folder / pptx_path).stat()
+                except OSError:
+                    stats[pptx_path] = None
+            stat = stats[pptx_path]
+            if stat is not None:
+                keys[row["id"]] = repr((pptx_path, stat.st_mtime_ns, stat.st_size,
+                                        row["index_in_deck"], strip))
+        return keys
+
     def embed_images_pending(self, limit: int = 20, stop_event=None) -> int:
         """Cache all renderable slides, including hidden slides and empty text.
 
@@ -313,10 +384,11 @@ class SlideProject:
                     f"SELECT s.id, e.model, e.source_key FROM slides s "
                     f"LEFT JOIN {table} e ON e.slide_id = s.id ORDER BY s.id"
                 ).fetchall()
+            keys = self._image_source_keys(strip)
             for row in rows:
                 if count >= limit or (stop_event is not None and stop_event.is_set()):
                     break
-                key = self._image_source_key(row["id"], strip)
+                key = keys.get(row["id"])
                 if key is None or (row["model"] == self.IMAGE_EMBEDDING_MODEL
                                    and row["source_key"] == key):
                     continue

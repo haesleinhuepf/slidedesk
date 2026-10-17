@@ -1,11 +1,14 @@
 """Flask application exposing the slidedesk REST API and GUI."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import threading
+import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_file, render_template, stream_with_context
@@ -23,6 +26,9 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True, on_shutdown=
     app.config["JSON_SORT_KEYS"] = False
     generation_events = {}
     generation_events_lock = threading.Lock()
+    # Recent /api/decks versions -> {deck_id: revision}, for incremental updates.
+    deck_snapshots = OrderedDict()
+    deck_snapshots_lock = threading.Lock()
 
     def deck_file_exists(deck):
         return deck is not None and (project.folder / deck.pptx_path).is_file()
@@ -59,6 +65,65 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True, on_shutdown=
             "text": slide.text,
         }
 
+    # Trace API actions: print when each request starts and finishes. The
+    # browser sends its send time in X-Client-Time (ms since epoch), so the
+    # delay between the click-triggered fetch and server start is visible too.
+    # Frequent polling and image requests are skipped to keep the output usable.
+    untraced_endpoints = {"static", "api_scan_status", "api_embeddings_status", "api_slide_image"}
+
+    # Skipped endpoints are still reported when they answer with anything other
+    # than a plain 200, explaining what the status code means here.
+    status_explanations = {
+        202: "accepted, work queued in background; browser retries",
+        304: "not modified, browser cache is still valid; nothing sent",
+        404: "not found",
+        500: "server error",
+    }
+
+    def trace_label():
+        return f"{request.method} {request.full_path.rstrip('?')} [{request.endpoint}]"
+
+    @app.before_request
+    def trace_request_start():
+        request.environ["slidedesk.trace_start"] = time.time()
+        if request.endpoint in untraced_endpoints:
+            return
+        delay = ""
+        client_time = request.headers.get("X-Client-Time")
+        if client_time:
+            try:
+                delay = f" ({time.time() * 1000 - float(client_time):.0f} ms after browser sent it)"
+            except ValueError:
+                pass
+        print(f"[{time.strftime('%H:%M:%S')}] START {trace_label()}{delay}", flush=True)
+
+    @app.after_request
+    def trace_request_end(response):
+        started = request.environ.get("slidedesk.trace_start")
+        if started is None:
+            return response
+        label = trace_label()
+        status = response.status_code
+        if request.endpoint in untraced_endpoints:
+            if request.endpoint == "static" or status == 200:
+                return response
+            explanation = status_explanations.get(status, "")
+            if status >= 400 and response.is_json:
+                explanation = f"{explanation}: {(response.get_json(silent=True) or {}).get('error', '')}"
+            elapsed = (time.time() - started) * 1000
+            print(
+                f"[{time.strftime('%H:%M:%S')}] {label} -> {status} in {elapsed:.0f} ms ({explanation})",
+                flush=True,
+            )
+            return response
+
+        def report():
+            elapsed = (time.time() - started) * 1000
+            print(f"[{time.strftime('%H:%M:%S')}] DONE  {label} -> {status} in {elapsed:.0f} ms", flush=True)
+
+        response.call_on_close(report)
+        return response
+
     @app.get("/")
     def index():
         return render_template("index.html")
@@ -81,17 +146,45 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True, on_shutdown=
         threading.Timer(0.2, _exit).start()
         return jsonify({"ok": True})
 
+    def decks_payload(decks, deck_ids=None):
+        slides_by_deck = project.slides_by_deck(deck_ids)
+        payload = []
+        for deck in decks:
+            entry = deck_to_json(deck)
+            entry["slides"] = [slide_to_json(s) for s in slides_by_deck.get(deck.id, [])]
+            payload.append(entry)
+        return payload
+
     @app.get("/api/decks")
     def api_decks():
-        decks = []
-        for deck in project.decks():
-            if not deck_file_exists(deck):
-                continue
-            slides = project.slides(deck.id)
-            payload = deck_to_json(deck)
-            payload["slides"] = [slide_to_json(s) for s in slides]
-            decks.append(payload)
-        return jsonify(decks)
+        """List decks with their slides.
+
+        With `?since=<version>` (from a previous response), only decks changed
+        since that version are sent, plus the ids of removed decks. An empty or
+        unknown version yields the full list with `"full": true`.
+        """
+        decks = [deck for deck in project.decks() if deck_file_exists(deck)]
+        if "since" not in request.args:
+            return jsonify(decks_payload(decks))
+        revisions = project.deck_revisions()
+        current = {deck.id: revisions.get(deck.id, "") for deck in decks}
+        version = hashlib.sha1(repr(sorted(current.items())).encode()).hexdigest()[:16]
+        with deck_snapshots_lock:
+            deck_snapshots[version] = current
+            deck_snapshots.move_to_end(version)
+            while len(deck_snapshots) > 16:
+                deck_snapshots.popitem(last=False)
+            previous = deck_snapshots.get(request.args["since"])
+        if previous is None:
+            return jsonify({"version": version, "full": True,
+                            "decks": decks_payload(decks), "removed": []})
+        changed = [deck for deck in decks if previous.get(deck.id) != current[deck.id]]
+        removed = [deck_id for deck_id in previous if deck_id not in current]
+        return jsonify({
+            "version": version, "full": False,
+            "decks": decks_payload(changed, [deck.id for deck in changed]) if changed else [],
+            "removed": removed,
+        })
 
     @app.get("/api/decks/<int(signed=True):deck_id>/slides")
     def api_deck_slides(deck_id):

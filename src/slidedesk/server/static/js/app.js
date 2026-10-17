@@ -10,6 +10,15 @@
 (function () {
   "use strict";
 
+  // Stamp API requests with the browser send time so the server can print how
+  // long each action took to start (see trace hooks in server/app.py).
+  const nativeFetch = window.fetch.bind(window);
+  function fetch(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    headers.set("X-Client-Time", String(Date.now()));
+    return nativeFetch(url, { ...options, headers });
+  }
+
   const SLIDE_HEIGHT = 140;
   const SLIDE_WIDTH = Math.round((SLIDE_HEIGHT * 16) / 9);
   const GAP = 18;
@@ -33,6 +42,7 @@
 
   const state = {
     decks: [],
+    decksVersion: "", // version of `decks` reported by /api/decks
     deckById: new Map(),
     slidesById: new Map(), // slide id -> { slide, deck }
     mode: "pool", // "pool" | "search" | "deck" | "similar"
@@ -358,9 +368,21 @@
 
   // -- data loading -------------------------------------------------------
   async function loadDecks() {
-    const res = await fetch("/api/decks");
-    const decks = await res.json();
-    state.decks = decks;
+    // Incremental: the server sends only decks changed since `decksVersion`.
+    const res = await fetch(`/api/decks?since=${encodeURIComponent(state.decksVersion)}`);
+    const data = await res.json();
+    if (!data.full && !data.decks.length && !data.removed.length) {
+      state.decksVersion = data.version;
+      return;
+    }
+    if (data.full) {
+      state.decks = data.decks;
+    } else {
+      const replaced = new Set(data.removed.concat(data.decks.map((d) => d.id)));
+      state.decks = state.decks.filter((d) => !replaced.has(d.id)).concat(data.decks);
+      state.decks.sort((a, b) => (a.pptx_path < b.pptx_path ? -1 : a.pptx_path > b.pptx_path ? 1 : 0));
+    }
+    state.decksVersion = data.version;
     indexData();
     if (state.mode === "pool") {
       updateSelectionUi();
@@ -1545,7 +1567,19 @@
   loadDecks().then(() => fitView());
   pollScanStatus();
   pollEmbeddingStatus();
-  setInterval(loadDecks, 5000);
-  setInterval(pollScanStatus, 2000);
-  setInterval(pollEmbeddingStatus, 2000);
+  // Schedule the next poll only after the previous one finished, so slow
+  // responses cannot pile up and occupy the browser's connections.
+  function pollWithoutOverlap(fn, ms) {
+    setTimeout(async () => {
+      try {
+        await fn();
+      } catch (e) {
+        /* ignore transient network errors */
+      }
+      pollWithoutOverlap(fn, ms);
+    }, ms);
+  }
+  pollWithoutOverlap(loadDecks, 5000);
+  pollWithoutOverlap(pollScanStatus, 2000);
+  pollWithoutOverlap(pollEmbeddingStatus, 2000);
 })();
