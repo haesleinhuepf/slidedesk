@@ -425,6 +425,34 @@ class SlideProject:
         return images.render_slide_image(
             self.folder / deck.pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout
         )
+
+    def cached_slide_image_path(self, slide_id: int, layout: bool = True) -> Optional[Path]:
+        """Return the cached PNG of a slide if it exists, without decoding or rendering."""
+        slide = self.slide(slide_id)
+        deck = self.deck(slide.deck_id) if slide is not None else None
+        if deck is None:
+            return None
+        try:
+            return images.cached_path(
+                self.folder / deck.pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout
+            )
+        except OSError:
+            return None
+
+    def slide_image_diagnosis(self, slide_id: int, layout: bool = True) -> dict:
+        """Report the source and cache state of a slide image, without rendering it."""
+        slide = self.slide(slide_id)
+        if slide is None:
+            return {"error": "slide not in database"}
+        deck = self.deck(slide.deck_id)
+        if deck is None:
+            return {"error": f"deck {slide.deck_id} not in database"}
+        info = {"pptx": deck.pptx_path, "slide": slide.index_in_deck + 1}
+        info.update(images.diagnose(
+            self.folder / deck.pptx_path, slide.index_in_deck, self.cache_dir, strip=not layout
+        ))
+        return info
+
     def slide_pptx_object(self, slide_id: int) -> PptxSlide:
         """Open the source .pptx and return the python-pptx Slide object."""
         slide = self.slide(slide_id)

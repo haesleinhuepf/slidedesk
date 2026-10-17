@@ -489,20 +489,29 @@
   }
 
   // Thumbnails are loaded by a polling loop: an attempt is abandoned after the timeout
-  // and retried on a later tick, as long as the slide is still on screen.
-  const IMAGE_LOAD_TIMEOUT_MS = 1000;
+  // and retried on a later tick, as long as the slide is still on screen. Images are
+  // fetched with cache: "no-store" and shown via object URLs instead of setting <img src>
+  // to the API URL: after aborted loads, Chrome held <img> requests for some URLs without
+  // ever sending them, while fetching the same image bypassing the cache succeeded at once.
+  // Stay below the browser's 6 connections per host so status polls are not queued.
+  const IMAGE_LOAD_TIMEOUT_MS = 15000;
   const IMAGE_LOOP_INTERVAL_MS = 200;
-  const MAX_CONCURRENT_IMAGE_LOADS = 6;
+  const MAX_CONCURRENT_IMAGE_LOADS = 4;
   const IMAGE_REPORT_INTERVAL_MS = 2000;
   const IMAGE_MAX_BACKOFF_MS = 5000;
   const IMAGE_ERROR_RETRY_MS = 5000;
-  const imageStats = { timeouts: 0, lastReport: 0 };
+  // maxLagMs: worst delay of the loading loop beyond its interval (main thread busy).
+  const imageStats = { timeouts: 0, lastReport: 0, lastTick: 0, maxLagMs: 0, maxLoopMs: 0 };
+
+  // Identifies this page load in the server log: tabs to the same server share the
+  // browser's connections per host, so several active tabs can starve image loads.
+  const imageClientId = Math.random().toString(36).slice(2, 8);
 
   function reportImageStatus(payload) {
     fetch("/api/image-status", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ client: imageClientId, ...payload }),
       keepalive: true,
     }).catch(() => {});
   }
@@ -512,40 +521,80 @@
     return el ? Number(el.dataset.slideId) : null;
   }
 
+  // waited_ms far above the timeout means the main thread was blocked; connected=false
+  // means the <img> was replaced by a re-render; status is the HTTP status (0: no response).
+  function imageReport(event, img, startedAt, extra = {}) {
+    return {
+      event,
+      slide_id: slideIdOf(img),
+      attempts: Number(img.dataset.attempts),
+      layout: !img.dataset.src.includes("layout=false"),
+      waited_ms: Math.round(performance.now() - startedAt),
+      connected: img.isConnected,
+      ...extra,
+    };
+  }
+
   function startImageLoad(img) {
     img.dataset.loading = "1";
     img.dataset.attempts = (Number(img.dataset.attempts) || 0) + 1;
-    let timer = null;
-    const finish = () => {
+    const startedAt = performance.now();
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, IMAGE_LOAD_TIMEOUT_MS);
+    let status = 0;
+    const fail = (error) => {
       clearTimeout(timer);
       delete img.dataset.loading;
-      img.removeEventListener("load", onLoad);
-      img.removeEventListener("error", onError);
+      if (timedOut) {
+        const backoff = Math.min(IMAGE_LOAD_TIMEOUT_MS * Number(img.dataset.attempts), IMAGE_MAX_BACKOFF_MS);
+        img.dataset.retryAt = Date.now() + backoff;
+        imageStats.timeouts += 1;
+        reportImageStatus(imageReport("timeout", img, startedAt, { status }));
+      } else {
+        img.dataset.retryAt = Date.now() + IMAGE_ERROR_RETRY_MS;
+        reportImageStatus(imageReport("error", img, startedAt, { status, message: String(error) }));
+      }
     };
-    const onLoad = () => {
-      img.dataset.loaded = "1";
-      finish();
-    };
-    const onError = () => {
-      img.removeAttribute("src");
-      img.dataset.retryAt = Date.now() + IMAGE_ERROR_RETRY_MS;
-      reportImageStatus({ event: "error", slide_id: slideIdOf(img) });
-      finish();
-    };
-    img.addEventListener("load", onLoad);
-    img.addEventListener("error", onError);
-    timer = setTimeout(() => {
-      img.removeAttribute("src"); // aborts the pending request
-      const backoff = Math.min(IMAGE_LOAD_TIMEOUT_MS * Number(img.dataset.attempts), IMAGE_MAX_BACKOFF_MS);
-      img.dataset.retryAt = Date.now() + backoff;
-      imageStats.timeouts += 1;
-      reportImageStatus({ event: "timeout", slide_id: slideIdOf(img) });
-      finish();
-    }, IMAGE_LOAD_TIMEOUT_MS);
-    img.src = img.dataset.src;
+    fetch(img.dataset.src, { cache: "no-store", signal: controller.signal })
+      .then((res) => {
+        status = res.status;
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.blob();
+      })
+      .then((blob) => new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(blob);
+        const done = (ok) => {
+          img.removeEventListener("load", onLoad);
+          img.removeEventListener("error", onError);
+          URL.revokeObjectURL(url); // the decoded image stays displayed
+          if (ok) resolve();
+          else reject(new Error("image could not be decoded"));
+        };
+        const onLoad = () => done(true);
+        const onError = () => done(false);
+        img.addEventListener("load", onLoad);
+        img.addEventListener("error", onError);
+        img.src = url;
+      }))
+      .then(() => {
+        clearTimeout(timer);
+        delete img.dataset.loading;
+        img.dataset.loaded = "1";
+      })
+      .catch(fail);
   }
 
   function loadVisibleImages() {
+    const tickStart = performance.now();
+    if (imageStats.lastTick) {
+      const lag = tickStart - imageStats.lastTick - IMAGE_LOOP_INTERVAL_MS;
+      imageStats.maxLagMs = Math.max(imageStats.maxLagMs, Math.round(lag));
+    }
+    imageStats.lastTick = tickStart;
     const all = canvas.node().querySelectorAll(".slide-thumb img[data-src]");
     const pending = canvas.node().querySelectorAll(".slide-thumb img[data-src]:not([data-loaded])");
     if (!pending.length) return;
@@ -564,6 +613,7 @@
       startImageLoad(img);
       active += 1;
     }
+    imageStats.maxLoopMs = Math.max(imageStats.maxLoopMs, Math.round(performance.now() - tickStart));
     if (onScreen && now - imageStats.lastReport >= IMAGE_REPORT_INTERVAL_MS) {
       imageStats.lastReport = now;
       reportImageStatus({
@@ -572,7 +622,12 @@
         loading: active,
         loaded: all.length - pending.length,
         timeouts: imageStats.timeouts,
+        thumbs: all.length,
+        max_lag_ms: imageStats.maxLagMs,
+        max_loop_ms: imageStats.maxLoopMs,
       });
+      imageStats.maxLagMs = 0;
+      imageStats.maxLoopMs = 0;
     }
   }
 

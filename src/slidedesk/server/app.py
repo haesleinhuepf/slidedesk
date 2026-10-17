@@ -282,22 +282,84 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True, on_shutdown=
     def api_embeddings_status():
         return jsonify(project.embedding_status())
 
+    # Per-slide image request bookkeeping, so browser timeout reports can tell whether
+    # the request reached the server, is still being processed, or was answered.
+    image_requests_lock = threading.Lock()
+    image_requests_in_flight = {}  # slide_id -> list of monotonic start times
+    image_last_outcome = {}  # slide_id -> (monotonic end time, description)
+
+    def finish_image_request(slide_id, started, outcome):
+        with image_requests_lock:
+            starts = image_requests_in_flight.get(slide_id, [])
+            if started in starts:
+                starts.remove(started)
+            if not starts:
+                image_requests_in_flight.pop(slide_id, None)
+            image_last_outcome[slide_id] = (
+                time.monotonic(), f"{outcome} after {(time.monotonic() - started) * 1000:.0f} ms"
+            )
+
+    def describe_image_requests(slide_id):
+        now = time.monotonic()
+        with image_requests_lock:
+            starts = list(image_requests_in_flight.get(slide_id, []))
+            last = image_last_outcome.get(slide_id)
+        parts = []
+        if starts:
+            parts.append(f"server_in_flight={len(starts)} (oldest {now - min(starts):.1f}s)")
+        else:
+            parts.append("server_in_flight=0")
+        if last is None:
+            parts.append("last_response=never")
+        else:
+            parts.append(f"last_response='{last[1]}' {now - last[0]:.1f}s ago")
+        return parts
+
+    def describe_image_source(slide_id, layout):
+        try:
+            info = project.slide_image_diagnosis(slide_id, layout=layout)
+        except Exception as exc:  # diagnostics must never break the report
+            return [f"diagnosis_failed='{type(exc).__name__}: {exc}'"]
+        if "error" in info:
+            return [f"problem='{info['error']}'"]
+        parts = [f"pptx='{info['pptx']}' slide={info['slide']}",
+                 f"pptx_exists={info['pptx_exists']}"]
+        if info["pptx_exists"]:
+            parts.append(f"cached_png={info['cached']}")
+        if info["failed"]:
+            parts.append(f"earlier_render_failure='{info['failed']}'")
+        parts.append(f"rendering_now='{info['rendering']}'" if info["rendering"] else "rendering_now=none")
+        return parts
+
     @app.get("/api/slides/<int(signed=True):slide_id>/image")
     def api_slide_image(slide_id):
         started = time.monotonic()
+        with image_requests_lock:
+            image_requests_in_flight.setdefault(slide_id, []).append(started)
         image_log.info("Image request for slide %s started", slide_id)
+        layout = request.args.get("layout", "true").lower() != "false"
+        # Serve cached PNGs as files: decoding and re-encoding them took over a second.
+        cached = project.cached_slide_image_path(slide_id, layout=layout)
+        if cached is not None:
+            finish_image_request(slide_id, started, "200 cached")
+            image_log.info("Image for slide %s served from cache", slide_id)
+            return send_file(cached, mimetype="image/png", max_age=3600)
         try:
-            layout = request.args.get("layout", "true").lower() != "false"
             image = project.slide_image(slide_id) if layout else project.slide_image(slide_id, layout=False)
         except (KeyError, FileNotFoundError, ValueError) as exc:
+            finish_image_request(slide_id, started, f"404 {exc}")
             app.logger.error("Cannot serve image for slide %s: %s", slide_id, exc)
             return jsonify({"error": str(exc)}), 404
-        except Exception:
+        except Exception as exc:
+            finish_image_request(slide_id, started, f"500 {type(exc).__name__}: {exc}")
             app.logger.exception("Rendering image for slide %s failed", slide_id)
             return jsonify({"error": "rendering failed"}), 500
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        buf.seek(0)
+        try:
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            buf.seek(0)
+        finally:
+            finish_image_request(slide_id, started, "200")
         image_log.info("Image for slide %s ready after %.0f ms", slide_id, (time.monotonic() - started) * 1000)
         return send_file(buf, mimetype="image/png", max_age=3600)
 
@@ -308,10 +370,27 @@ def create_app(project: SlideProject, *, scan_enabled: bool = True, on_shutdown=
         if event not in ("timeout", "error", "summary"):
             return jsonify({"error": "unknown event"}), 400
         values = []
-        for key in ("slide_id", "on_screen", "loading", "loaded", "timeouts"):
+        client = data.get("client")
+        if isinstance(client, str) and client.isalnum() and len(client) <= 16:
+            values.append(f"client={client}")
+        for key in ("slide_id", "attempts", "status", "waited_ms", "connected", "on_screen",
+                    "loading", "loaded", "timeouts", "thumbs", "max_lag_ms", "max_loop_ms"):
             value = data.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
+            if key == "connected":
+                if isinstance(value, bool):
+                    values.append(f"{key}={value}")
+            elif isinstance(value, int) and not isinstance(value, bool):
                 values.append(f"{key}={value}")
+        message = data.get("message")
+        if isinstance(message, str) and message:
+            values.append(f"message='{message[:200]}'")
+        slide_id = data.get("slide_id")
+        if event != "summary" and isinstance(slide_id, int) and not isinstance(slide_id, bool):
+            layout = data.get("layout") is not False
+            if not layout:
+                values.append("layout=False")
+            values.extend(describe_image_requests(slide_id))
+            values.extend(describe_image_source(slide_id, layout))
         image_log.warning("Browser image %s: %s", event, " ".join(values))
         return "", 204
 

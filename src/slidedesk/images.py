@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 _render_lock = threading.RLock()
 # Decks whose rendering raised; keyed by (path, mtime_ns, size, strip) so edits retry.
 _failed_renders: dict = {}
+# (pptx_path, strip, monotonic start) of the deck being rendered, for diagnostics.
+_current_render: Optional[tuple] = None
 
 
 def _render_presentation(prs) -> list:
@@ -92,7 +94,11 @@ def render_slide_image(
         return Image.open(cached)
 
     # Concurrent requests (e.g. browser retries) must not each re-render the same deck.
+    wait_started = time.monotonic()
     with _render_lock:
+        waited = time.monotonic() - wait_started
+        if waited >= 0.5:
+            logger.info("Slide %d of %s waited %.1fs for the render lock", index + 1, pptx_path.name, waited)
         cached = cached_path(pptx_path, index, cache_dir, strip)
         if cached is not None:
             return Image.open(cached)
@@ -105,13 +111,17 @@ def _render_and_cache(pptx_path: Path, index: int, cache_dir: Path, strip: bool)
     if failure_key in _failed_renders:
         raise ValueError(f"Rendering {pptx_path.name} failed earlier: {_failed_renders[failure_key]}")
     logger.warning("Slide %d of %s is not cached; rendering the deck now", index + 1, pptx_path)
+    global _current_render
     started = time.monotonic()
+    _current_render = (pptx_path, strip, started)
     try:
         rendered = _render_deck_cached(pptx_path, stat.st_mtime_ns, stat.st_size, strip)
     except Exception as exc:
         logger.exception("Rendering %s failed after %.1fs", pptx_path, time.monotonic() - started)
         _failed_renders[failure_key] = f"{type(exc).__name__}: {exc}"
         raise ValueError(f"Rendering {pptx_path.name} failed: {exc}") from exc
+    finally:
+        _current_render = None
     logger.warning("Rendered %s in %.1fs", pptx_path.name, time.monotonic() - started)
     if not 0 <= index < len(rendered):
         raise ValueError(f"Slide {index} not found in {pptx_path}")
@@ -123,6 +133,24 @@ def _render_and_cache(pptx_path: Path, index: int, cache_dir: Path, strip: bool)
             slide_image.save(tmp_target, format="PNG")
             tmp_target.replace(target)
     return rendered[index].copy()
+
+
+def diagnose(pptx_path: Path, index: int, cache_dir: Path, strip: bool = False) -> dict:
+    """Describe why slide `index` of `pptx_path` may not be servable, without rendering."""
+    info = {"pptx_exists": pptx_path.is_file(), "cached": None, "failed": None, "rendering": None}
+    if info["pptx_exists"]:
+        try:
+            stat = pptx_path.stat()
+            info["cached"] = cached_path(pptx_path, index, cache_dir, strip) is not None
+            info["failed"] = _failed_renders.get((pptx_path, stat.st_mtime_ns, stat.st_size, strip))
+        except OSError as exc:
+            info["failed"] = f"{type(exc).__name__}: {exc}"
+    current = _current_render
+    if current is not None:
+        path, current_strip, started = current
+        info["rendering"] = (f"{path.name}{' (strip)' if current_strip else ''} "
+                             f"for {time.monotonic() - started:.1f}s")
+    return info
 
 
 def cache_deck_images(pptx_path: Path, cache_dir: Path) -> None:

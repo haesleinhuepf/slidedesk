@@ -58,3 +58,20 @@ def test_render_slide_image_rejects_missing_slide(deck, monkeypatch):
     fake_render(monkeypatch, [])
     with pytest.raises(ValueError):
         images.render_slide_image(deck, 5, deck.parent / "cache")
+
+
+def test_diagnose_reports_missing_cached_and_failed(deck, monkeypatch, tmp_path):
+    cache = tmp_path / "cache"
+    missing = images.diagnose(tmp_path / "nope.pptx", 0, cache)
+    assert missing == {"pptx_exists": False, "cached": None, "failed": None, "rendering": None}
+
+    info = images.diagnose(deck, 0, cache)
+    assert info["pptx_exists"] is True and info["cached"] is False and info["failed"] is None
+
+    def failing_render(path):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(images, "_render_visible_deck", failing_render)
+    with pytest.raises(ValueError):
+        images.render_slide_image(deck, 0, cache)
+    assert images.diagnose(deck, 0, cache)["failed"] == "RuntimeError: boom"
