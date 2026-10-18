@@ -8,8 +8,14 @@ dist/
 slidedeck.db
 .slidedeck_cache/
 example/
-examples/
 examples_mini/
 exampes_mini/
+examples/images
+examples/zenodo_pptx
+examples/zenodo_meta
+
 
 .test_tmp*
+
+*.slidedesk*
+*.ipynb_checkpoints*
