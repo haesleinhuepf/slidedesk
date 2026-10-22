@@ -441,7 +441,7 @@
       const status = await res.json();
       const el = document.getElementById("embedding-status");
       el.title = "";
-      const caches = [status, status.vision].filter((cache) => cache && cache.available);
+      const caches = [status, status.vision, status.mixed].filter((cache) => cache && cache.available);
       const total = caches.reduce((sum, cache) => sum + cache.total, 0);
       const embedded = caches.reduce((sum, cache) => sum + cache.embedded, 0);
       if (!total) {

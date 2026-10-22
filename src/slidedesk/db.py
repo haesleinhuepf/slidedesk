@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS slide_strip_image_embeddings (
     slide_id INTEGER PRIMARY KEY REFERENCES slides(id) ON DELETE CASCADE,
     model TEXT NOT NULL,
     source_key TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS slide_mixed_embeddings (
+    slide_id INTEGER PRIMARY KEY REFERENCES slides(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
     vector BLOB NOT NULL,
     updated_at REAL NOT NULL
 );

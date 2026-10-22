@@ -76,6 +76,8 @@ such as "image filtering" and it may find slides about "image processsing", too.
 
 * Slide images are embedded locally with [openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32). 
 
+* For "mixed" embeddings, the vision language model [google/gemma-3-4b-it](https://huggingface.co/google/gemma-3-4b-it) writes a short abstract of each slide (rendered without its layout), which is then embedded with the text-embedding model above. Similar-slide suggestions use these embeddings first, followed by image and text embeddings. This model is gated on Hugging Face: accept its license and log in (e.g. `hf auth login`) before first use. It is large and runs slowly without a GPU; slides are described after all image embeddings are computed.
+
 * Advanced Search generates editable slide outlines locally with the text-generation small language model [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B). The model is downloaded on first use.
 
 The background worker stores vectors in `slidedesk.db`. 

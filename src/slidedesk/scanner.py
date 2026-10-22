@@ -197,6 +197,9 @@ class BackgroundScanner:
         while not self._stop_event.is_set():
             try:
                 count = self.project.embed_images_pending(stop_event=self._stop_event)
+                if count == 0:
+                    # The VLM is slow; describe slides once image embeddings are done.
+                    count = self.project.embed_mixed_pending(stop_event=self._stop_event)
             except Exception as exc:
                 log.warning("Background image embeddings failed: %s", exc)
                 self._stop_event.wait(max(60.0, self.interval))

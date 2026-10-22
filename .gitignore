@@ -13,6 +13,8 @@ exampes_mini/
 examples/images
 examples/zenodo_pptx
 examples/zenodo_meta
+example_rd/
+
 
 
 .test_tmp*
