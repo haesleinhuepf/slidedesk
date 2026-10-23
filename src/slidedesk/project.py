@@ -17,7 +17,8 @@ from PIL import Image
 from pptx import Presentation
 from pptx.slide import Slide as PptxSlide
 
-from . import convert, db, embeddings, image_embeddings, images, pptx_tools
+from . import (convert, db, embeddings, image_embeddings, images, mixed_embeddings,
+               pptx_tools)
 from .models import Deck, Slide
 from .scanner import BackgroundScanner, scan_once
 
@@ -60,6 +61,7 @@ class SlideProject:
 
     EMBEDDING_MODEL = embeddings.DEFAULT_MODEL
     IMAGE_EMBEDDING_MODEL = image_embeddings.MODEL
+    MIXED_VLM_MODEL = mixed_embeddings.VLM_MODEL
 
     def __init__(self, folder: str | Path):
         self.folder = Path(folder).expanduser().resolve()
@@ -86,6 +88,7 @@ class SlideProject:
         self._export_lock = threading.Lock()
         self._export_number = 0
         self._image_embedding_lock = threading.Lock()
+        self._mixed_embedding_lock = threading.Lock()
         self._renderer = images.BackgroundRenderer(self.cache_dir)
 
     # -- indexing -----------------------------------------------------
@@ -105,7 +108,7 @@ class SlideProject:
                 images.delete_cached(pptx_path, len(slide_ids), self.cache_dir)
             with self._conn_lock, self.conn:
                 for table in ("slide_embeddings", "slide_image_embeddings",
-                              "slide_strip_image_embeddings"):
+                              "slide_strip_image_embeddings", "slide_mixed_embeddings"):
                     self.conn.executemany(
                         f"DELETE FROM {table} WHERE slide_id = ?", [(i,) for i in slide_ids]
                     )
@@ -141,7 +144,9 @@ class SlideProject:
     # -- reading data ---------------------------------------------------
     def decks(self) -> List[Deck]:
         with self._conn_lock:
-            rows = self.conn.execute("SELECT * FROM decks ORDER BY pptx_path").fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM decks WHERE load_failed = 0 ORDER BY pptx_path"
+            ).fetchall()
         return [Deck.from_row(r) for r in rows]
 
     def deck(self, deck_id: int) -> Optional[Deck]:
@@ -266,15 +271,27 @@ class SlideProject:
                 "LEFT JOIN slide_image_embeddings e ON e.slide_id = s.id AND e.model = ?",
                 (self.IMAGE_EMBEDDING_MODEL,),
             ).fetchall()
+            mixed_rows = self.conn.execute(
+                "SELECT s.id, e.source_key FROM slides s "
+                "LEFT JOIN slide_mixed_embeddings e ON e.slide_id = s.id AND e.model = ?",
+                (self._mixed_model_key(),),
+            ).fetchall()
         keys = self._image_source_keys()
         image_done = sum(
             row["source_key"] is not None and row["source_key"] == keys.get(row["id"])
             for row in image_rows
         )
+        strip_keys = self._image_source_keys(strip=True)
+        mixed_done = sum(
+            row["source_key"] is not None and row["source_key"] == strip_keys.get(row["id"])
+            for row in mixed_rows
+        )
         return {
             "available": self._embeddings_available(), "total": total, "embedded": done,
             "vision": {"available": image_embeddings.is_available(),
                        "total": len(image_rows), "embedded": image_done},
+            "mixed": {"available": mixed_embeddings.is_available(),
+                      "total": len(mixed_rows), "embedded": mixed_done},
         }
 
     def embed_pending(self, limit: int = 20, stop_event: Optional[threading.Event] = None) -> int:
@@ -425,14 +442,78 @@ class SlideProject:
                 count += 1
         return count
 
+    def _mixed_model_key(self) -> str:
+        """Mixed vectors depend on both the VLM and the text-embedding model."""
+        return f"{self.MIXED_VLM_MODEL}|{self.EMBEDDING_MODEL}"
+
+    def embed_mixed_pending(self, limit: int = 20, stop_event=None) -> int:
+        """Describe strip-layout slide images with a VLM and cache text embeddings
+        of the descriptions in `slide_mixed_embeddings`.
+
+        Like image embeddings, inference runs outside the DB lock and the source is
+        rechecked before writing. "No content" slides are cached with an empty vector.
+        """
+        model = self._mixed_model_key()
+        count = 0
+        with self._mixed_embedding_lock:
+            with self._conn_lock:
+                rows = self.conn.execute(
+                    "SELECT s.id, e.model, e.source_key FROM slides s "
+                    "LEFT JOIN slide_mixed_embeddings e ON e.slide_id = s.id ORDER BY s.id"
+                ).fetchall()
+            keys = self._image_source_keys(strip=True)
+            for row in rows:
+                if count >= limit or (stop_event is not None and stop_event.is_set()):
+                    break
+                key = keys.get(row["id"])
+                if key is None or (row["model"] == model and row["source_key"] == key):
+                    continue
+                slide = self.slide(row["id"])
+                deck = self.deck(slide.deck_id) if slide else None
+                if slide and deck:
+                    print(f"Computing mixed embedding: {Path(deck.pptx_path).name}, "
+                          f"slide {slide.index_in_deck + 1}")
+                try:
+                    with self.slide_image(row["id"], layout=False) as image:
+                        description, vector = mixed_embeddings.embed_mixed(
+                            image, self.MIXED_VLM_MODEL, self.EMBEDDING_MODEL)
+                except embeddings.EmbeddingError:
+                    # Model/dependency failures affect every slide; retry next pass.
+                    raise
+                except Exception as exc:
+                    log.warning("Image rendering failed for slide %s: %s", row["id"], exc)
+                    continue
+                with self._conn_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                    if self._image_source_key(row["id"], strip=True) != key:
+                        continue
+                    self.conn.execute(
+                        "INSERT INTO slide_mixed_embeddings "
+                        "(slide_id, model, source_key, description, vector, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT(slide_id) DO UPDATE SET model=excluded.model, "
+                        "source_key=excluded.source_key, description=excluded.description, "
+                        "vector=excluded.vector, updated_at=excluded.updated_at",
+                        (row["id"], model, key, description,
+                         embeddings.pack_vector(vector), time.time()),
+                    )
+                    self.conn.commit()
+                count += 1
+        return count
+
     def _similar_cached(self, slide_id: int, image: bool = False, strip: bool = False,
-                        limit: Optional[int] = None) -> List[int]:
-        image = image or strip
-        if strip:
-            table = "slide_strip_image_embeddings"
+                        mixed: bool = False, limit: Optional[int] = None) -> List[int]:
+        if mixed:
+            # Keyed on the strip-layout rendering that the VLM described.
+            table, model, image, strip = "slide_mixed_embeddings", self._mixed_model_key(), True, True
         else:
-            table = "slide_image_embeddings" if image else "slide_embeddings"
-        model = self.IMAGE_EMBEDDING_MODEL if image else self.EMBEDDING_MODEL
+            image = image or strip
+            if strip:
+                table = "slide_strip_image_embeddings"
+            else:
+                table = "slide_image_embeddings" if image else "slide_embeddings"
+            model = self.IMAGE_EMBEDDING_MODEL if image else self.EMBEDDING_MODEL
         # Bulk keys: one query and one stat per deck instead of per candidate slide.
         keys = self._image_source_keys(strip) if image else None
         with self._conn_lock:
@@ -453,20 +534,23 @@ class SlideProject:
         return [rows[i]["slide_id"] for i in order]
 
     def similar_slides(self, slide_id: int, top_k: int = 16) -> List[Slide]:
-        """Strip-layout image matches first, then image matches, then text matches.
+        """Mixed (VLM description) matches first, then strip-layout image matches,
+        then image matches, then text matches.
 
-        Reserve half the slots for visual matches (strip-layout before regular).
-        Fill unused slots from any cache without comparing scores from different
-        embedding spaces.
+        After the mixed matches, reserve half the slots for visual matches
+        (strip-layout before regular). Fill unused slots from any cache without
+        comparing scores from different embedding spaces.
         """
         if top_k <= 0:
             return []
         # The merge below never uses more than top_k entries of any list.
+        mixed = self._similar_cached(slide_id, mixed=True, limit=top_k)
         stripped = self._similar_cached(slide_id, strip=True, limit=top_k)
         visual = self._similar_cached(slide_id, image=True, limit=top_k)
         textual = self._similar_cached(slide_id, limit=top_k)
         primary = list(dict.fromkeys(stripped + visual))
-        ids = list(dict.fromkeys(primary[:(top_k + 1) // 2] + stripped + textual + visual))[:top_k]
+        ids = list(dict.fromkeys(
+            mixed + primary[:(top_k + 1) // 2] + stripped + textual + visual))[:top_k]
         slides = [self.slide(sid) for sid in ids]
         return [s for s in slides if s is not None]
 
