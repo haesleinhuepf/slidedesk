@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS decks (
     hidden_pdf_path TEXT,
     hidden_pdf_mtime REAL,
     last_scanned REAL,
-    pdf_conversion_failed INTEGER NOT NULL DEFAULT 0
+    pdf_conversion_failed INTEGER NOT NULL DEFAULT 0,
+    load_failed INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS slides (
@@ -103,6 +104,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
         ("strip_pdf_path", "TEXT"),
         ("strip_pdf_mtime", "REAL"),
         ("pdf_conversion_failed", "INTEGER NOT NULL DEFAULT 0"),
+        ("load_failed", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if column not in deck_columns:
             conn.execute(f"ALTER TABLE decks ADD COLUMN {column} {kind}")

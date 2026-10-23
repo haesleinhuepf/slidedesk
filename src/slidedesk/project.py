@@ -144,7 +144,9 @@ class SlideProject:
     # -- reading data ---------------------------------------------------
     def decks(self) -> List[Deck]:
         with self._conn_lock:
-            rows = self.conn.execute("SELECT * FROM decks ORDER BY pptx_path").fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM decks WHERE load_failed = 0 ORDER BY pptx_path"
+            ).fetchall()
         return [Deck.from_row(r) for r in rows]
 
     def deck(self, deck_id: int) -> Optional[Deck]:

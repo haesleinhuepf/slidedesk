@@ -33,8 +33,9 @@ def _rel(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
-def _index_slides(conn, deck_id: int, pptx_path: Path) -> None:
-    prs = Presentation(str(pptx_path))
+def _index_slides(conn, deck_id: int, pptx_path: Path, prs=None) -> None:
+    if prs is None:
+        prs = Presentation(str(pptx_path))
     overrides = {
         row["source_slide_id"]: row["user_hidden"]
         for row in conn.execute(
@@ -118,10 +119,35 @@ def _scan_once(
                 "SELECT * FROM decks WHERE pptx_path = ?", (rel_pptx,)
             ).fetchone()
 
+        if row is not None and row["load_failed"] and row["pptx_mtime"] == mtime:
+            # Known-broken file; retry only once it changes on disk.
+            continue
         needs_reindex = force or row is None or row["pptx_mtime"] != mtime
         now = time.time()
 
+        prs = None
         if needs_reindex:
+            try:
+                prs = Presentation(str(pptx_path))
+            except Exception as exc:
+                log.warning("Could not load %s; skipping until it changes: %s", rel_pptx, exc)
+                with project._conn_lock, conn:
+                    if row is None:
+                        conn.execute(
+                            "INSERT INTO decks (pptx_path, pptx_mtime, last_scanned, load_failed) "
+                            "VALUES (?, ?, ?, 1)",
+                            (rel_pptx, mtime, now),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE decks SET pptx_mtime=?, last_scanned=?, load_failed=1 "
+                            "WHERE id=?",
+                            (mtime, now, row["id"]),
+                        )
+                        conn.execute("DELETE FROM slides WHERE deck_id = ?", (row["id"],))
+                    conn.commit()
+                continue
+
             # Cache images before the deck is added to the database.
             for strip in (False, True):
                 try:
@@ -142,11 +168,11 @@ def _scan_once(
             else:
                 deck_id = row["id"]
                 conn.execute(
-                    "UPDATE decks SET pptx_mtime=?, last_scanned=? WHERE id=?",
+                    "UPDATE decks SET pptx_mtime=?, last_scanned=?, load_failed=0 WHERE id=?",
                     (mtime, now, deck_id),
                 )
             if needs_reindex:
-                _index_slides(conn, deck_id, pptx_path)
+                _index_slides(conn, deck_id, pptx_path, prs)
             conn.commit()
 
     with project._conn_lock, conn:

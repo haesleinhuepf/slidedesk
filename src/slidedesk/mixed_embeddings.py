@@ -10,7 +10,7 @@ from typing import List, Tuple
 from . import embeddings
 from .embeddings import EmbeddingError, get_device
 
-VLM_MODEL = "google/gemma-3-4b-it"
+VLM_MODEL = "Qwen/Qwen3-VL-2B-Thinking" # "google/gemma-3-4b-it"
 PROMPT = (
     "Given this image of a powerpoint slide, please write a short abstract what is "
     "shown in this slide. Ignore layout and logos. Focus on the conceptual content of "
@@ -35,7 +35,9 @@ def is_no_content(description: str) -> bool:
 
 def describe_image(image, model: str = VLM_MODEL, prompt: str = PROMPT) -> str:
     """Ask the VLM (loaded once per process) to summarize a slide image."""
+    import time
     with _lock:
+        start_time = time.time()
         try:
             import torch
             from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -51,7 +53,7 @@ def describe_image(image, model: str = VLM_MODEL, prompt: str = PROMPT) -> str:
                 )
                 vlm.to(device)
                 vlm.eval()
-                processor = AutoProcessor.from_pretrained(model)
+                processor = AutoProcessor.from_pretrained(model, use_fast=True)
                 _models[cache_key] = vlm, processor
             vlm, processor = _models[cache_key]
             messages = [{"role": "user", "content": [
@@ -67,8 +69,11 @@ def describe_image(image, model: str = VLM_MODEL, prompt: str = PROMPT) -> str:
             with torch.inference_mode():
                 output = vlm.generate(**inputs, max_new_tokens=256, do_sample=False)
             generated = output[0, inputs["input_ids"].shape[-1]:]
-            return processor.decode(generated, skip_special_tokens=True).strip()
+            result = processor.decode(generated, skip_special_tokens=True).strip()
+            print("Image description:", result, "computation time: ", time.time() - start_time, "device:", device)
+            return result
         except Exception as exc:
+            print("Error occurred during image description.")
             raise EmbeddingError(f"VLM slide description failed: {exc}") from exc
 
 
